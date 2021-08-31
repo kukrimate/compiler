@@ -281,8 +281,13 @@ impl<'source> Iterator for Parser<'source> {
             }
         }
 
-        fn want_value(p: &mut Parser) -> Expr {
+        fn want_primary(p: &mut Parser) -> Expr {
             match std::mem::replace(&mut p.tmp, p.lex.next()).unwrap() {
+                Token::LParen        => {
+                    let expr = want_expr(p);
+                    want!(p, Token::RParen, "Missing )");
+                    expr
+                },
                 Token::Str(s)        => Expr::Str(want_type_suffix(p), s),
                 Token::Ident(s)      => Expr::Ident(s),
                 Token::Constant(val) => match want_type_suffix(p) {
@@ -312,12 +317,83 @@ impl<'source> Iterator for Parser<'source> {
             } else if maybe_want!(p, Token::And) {
                 Expr::Ref(Box::from(want_unary(p)))
             } else {
-                want_value(p)
+                want_primary(p)
+            }
+        }
+
+        fn want_cast(p: &mut Parser) -> Expr {
+            let expr1 = want_unary(p);
+            if maybe_want!(p, Token::Cast) {
+                Expr::Cast(Box::from(expr1), want_type(p))
+            } else {
+                expr1
+            }
+        }
+
+        fn want_mul(p: &mut Parser) -> Expr {
+            let expr1 = want_cast(p);
+            if maybe_want!(p, Token::Mul) {
+                Expr::Mul(Box::from(expr1), Box::from(want_mul(p)))
+            } else if maybe_want!(p, Token::Div) {
+                Expr::Div(Box::from(expr1), Box::from(want_mul(p)))
+            } else if maybe_want!(p, Token::Rem) {
+                Expr::Rem(Box::from(expr1), Box::from(want_mul(p)))
+            } else {
+                expr1
+            }
+        }
+
+        fn want_add(p: &mut Parser) -> Expr {
+            let expr1 = want_mul(p);
+            if maybe_want!(p, Token::Add) {
+                Expr::Add(Box::from(expr1), Box::from(want_add(p)))
+            } else if maybe_want!(p, Token::Sub) {
+                Expr::Sub(Box::from(expr1), Box::from(want_add(p)))
+            } else {
+                expr1
+            }
+        }
+
+        fn want_shift(p: &mut Parser) -> Expr {
+            let expr1 = want_add(p);
+            if maybe_want!(p, Token::Lsh) {
+                Expr::Lsh(Box::from(expr1), Box::from(want_shift(p)))
+            } else if maybe_want!(p, Token::Rsh) {
+                Expr::Rsh(Box::from(expr1), Box::from(want_shift(p)))
+            } else {
+                expr1
+            }
+        }
+
+        fn want_and(p: &mut Parser) -> Expr {
+            let expr1 = want_shift(p);
+            if maybe_want!(p, Token::And) {
+                Expr::And(Box::from(expr1), Box::from(want_and(p)))
+            } else {
+                expr1
+            }
+        }
+
+        fn want_xor(p: &mut Parser) -> Expr {
+            let expr1 = want_and(p);
+            if maybe_want!(p, Token::Xor) {
+                Expr::Xor(Box::from(expr1), Box::from(want_xor(p)))
+            } else {
+                expr1
+            }
+        }
+
+        fn want_or(p: &mut Parser) -> Expr {
+            let expr1 = want_xor(p);
+            if maybe_want!(p, Token::Or) {
+                Expr::Or(Box::from(expr1), Box::from(want_or(p)))
+            } else {
+                expr1
             }
         }
 
         fn want_expr(p: &mut Parser) -> Expr {
-            want_unary(p)
+            want_or(p)
         }
 
         fn want_type(p: &mut Parser) -> Type {
@@ -453,7 +529,7 @@ impl<'source> Iterator for Parser<'source> {
                     want!(p, Token::Comma, "Expected ,");
                     Stmt::Jge(label, expr1, want_expr(p))
                 },
-                _ => panic!("Invalid statement!"),
+                tok @ _ => panic!("Invalid statement: {:?}", tok),
             };
             if let Stmt::Label(_) = stmt {
                 want!(p, Token::Colon, "Expected :");
@@ -511,9 +587,10 @@ impl<'source> Iterator for Parser<'source> {
                                 want_initializer(self, &r#type)
                             }
                             want!(self, Token::Semicolon, "Expected ;");
+                        } else {
+                            let stmt = want_stmt(self, &mut func);
+                            func.stmts.push(stmt);
                         }
-                        let stmt = want_stmt(self, &mut func);
-                        func.stmts.push(stmt);
                     }
                 },
                 _ => panic!("Expected record, union, static or function!"),
