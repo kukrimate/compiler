@@ -39,7 +39,7 @@ EBNF grammar for the text representation of the IL.
                      | * <type-declaration>
                      | [ <type-declaration> ; <expression> ]
 
-<statement> ::= <label>
+<statement> ::= <label> :
               | auto <declaration> [= <initializer>] ;
               | set <expression> , <expression> ;
               | jmp <label> ;
