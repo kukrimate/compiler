@@ -15,5 +15,5 @@ fn main() {
 
     let mut lex = lex::Lexer::new(&data);
     let mut parser = ast::Parser::new(&mut lex);
-    println!("{:?}", parser.parse_file());
+    println!("{:#?}", parser.parse_file());
 }
