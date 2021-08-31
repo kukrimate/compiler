@@ -1,5 +1,4 @@
 use super::lex::{Lexer,Token};
-use super::gen::{Gen,PTR_SIZE,Storage};
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -34,6 +33,7 @@ pub enum Type {
     Record(Rc<Record>),
 }
 
+/*
 impl Type {
     pub fn get_size(&self) -> usize {
         match self {
@@ -63,6 +63,7 @@ impl Type {
         }
     }
 }
+*/
 
 //
 // Integer constant value
@@ -81,18 +82,18 @@ pub enum IntVal {
 }
 
 impl IntVal {
-    pub fn get_type(&self) -> Type {
-        match self {
-            IntVal::U8(_)   => Type::U8,
-            IntVal::I8(_)   => Type::I8,
-            IntVal::U16(_)  => Type::U16,
-            IntVal::I16(_)  => Type::I16,
-            IntVal::U32(_)  => Type::U32,
-            IntVal::I32(_)  => Type::I32,
-            IntVal::U64(_)  => Type::U64,
-            IntVal::I64(_)  => Type::I64,
-        }
-    }
+    // pub fn get_type(&self) -> Type {
+    //     match self {
+    //         IntVal::U8(_)   => Type::U8,
+    //         IntVal::I8(_)   => Type::I8,
+    //         IntVal::U16(_)  => Type::U16,
+    //         IntVal::I16(_)  => Type::I16,
+    //         IntVal::U32(_)  => Type::U32,
+    //         IntVal::I32(_)  => Type::I32,
+    //         IntVal::U64(_)  => Type::U64,
+    //         IntVal::I64(_)  => Type::I64,
+    //     }
+    // }
 
     pub fn as_usize(&self) -> usize {
         match self {
@@ -106,19 +107,6 @@ impl IntVal {
             IntVal::I64(v)  => *v as usize,
         }
     }
-}
-
-//
-// Variables
-//
-
-type Auto = (Type, usize);
-type Static = (Type, Storage);
-
-#[derive(Debug)]
-pub enum Var {
-    Auto(Rc<Auto>),
-    Static(Rc<Static>),
 }
 
 //
@@ -156,7 +144,14 @@ pub enum Expr {
 }
 
 #[derive(Debug)]
+pub enum Init {
+    Base(Expr),
+    List(Vec<Init>),
+}
+
+#[derive(Debug)]
 pub enum Stmt {
+    Auto(Rc<str>, Type, Option<Init>),
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
@@ -168,23 +163,35 @@ pub enum Stmt {
 }
 
 #[derive(Debug)]
+pub struct Static {
+    // Is it exported?
+    pub export: bool,
+    // Function name
+    pub name: Rc<str>,
+    // Type of static
+    pub r#type: Type,
+    // Initializer (if present)
+    pub init: Option<Init>,
+}
+
+#[derive(Debug)]
 pub struct Func {
+    // Is it exported?
+    pub export: bool,
     // Function name
     pub name: Rc<str>,
     // Parameters
     pub params: HashMap<Rc<str>, Type>,
-    // Local variables
-    pub locals: HashMap<Rc<str>, Var>,
     // Statements
     pub stmts: Vec<Stmt>,
 }
 
 impl Func {
-    fn new(name: Rc<str>) -> Func {
+    fn new(export: bool, name: Rc<str>) -> Func {
         Func {
+            export: export,
             name: name,
             params: HashMap::new(),
-            locals: HashMap::new(),
             stmts: Vec::new(),
         }
     }
@@ -195,29 +202,27 @@ impl Func {
 //
 
 pub struct Parser<'source> {
+    // Lexer and temorary token
     tmp: Option<Token>,
     lex: &'source mut Lexer<'source>,
-    // Global variables
-    pub statics: HashMap<Rc<str>, Rc<Static>>,
     // Records/unions
     records: HashMap<Rc<str>, Rc<Record>>,
 }
 
 impl<'source> Parser<'source> {
-    pub fn new(lex: &'source mut Lexer<'source>, gen: &'source mut Gen) -> Parser<'source> {
+    pub fn new(lex: &'source mut Lexer<'source>) -> Parser<'source> {
         Parser {
             tmp: lex.next(),
             lex: lex,
-            statics: HashMap::new(),
             records: HashMap::new(),
         }
     }
-}
 
-impl<'source> Iterator for Parser<'source> {
-    type Item = Func;
+    fn next_token(&mut self) -> Token {
+        std::mem::replace(&mut self.tmp, self.lex.next()).unwrap()
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
+    pub fn parse_file(&mut self) -> (Vec<Static>, Vec<Func>) {
         macro_rules! want {
             ($p:expr, $pattern:pat, $err:expr) => {
                 match $p.tmp {
@@ -242,8 +247,7 @@ impl<'source> Iterator for Parser<'source> {
         fn want_ident(p: &mut Parser) -> Rc<str> {
             match &p.tmp {
                 Some(Token::Ident(_)) => {
-                    if let Some(Token::Ident(s))
-                            = std::mem::replace(&mut p.tmp, p.lex.next()) {
+                    if let Token::Ident(s) = p.next_token() {
                         s
                     } else {
                         unreachable!()
@@ -256,8 +260,7 @@ impl<'source> Iterator for Parser<'source> {
         fn want_label(p: &mut Parser) -> Rc<str> {
             match &p.tmp {
                 Some(Token::Label(_)) => {
-                    if let Some(Token::Label(s))
-                            = std::mem::replace(&mut p.tmp, p.lex.next()) {
+                    if let Token::Label(s) = p.next_token() {
                         s
                     } else {
                         unreachable!()
@@ -268,7 +271,7 @@ impl<'source> Iterator for Parser<'source> {
         }
 
         fn want_type_suffix(p: &mut Parser) -> Type {
-            match std::mem::replace(&mut p.tmp, p.lex.next()).unwrap() {
+            match p.next_token() {
                 Token::U8   => Type::U8,
                 Token::I8   => Type::I8,
                 Token::U16  => Type::U16,
@@ -282,14 +285,14 @@ impl<'source> Iterator for Parser<'source> {
         }
 
         fn want_primary(p: &mut Parser) -> Expr {
-            match std::mem::replace(&mut p.tmp, p.lex.next()).unwrap() {
-                Token::LParen        => {
+            match p.next_token() {
+                Token::LParen => {
                     let expr = want_expr(p);
                     want!(p, Token::RParen, "Missing )");
                     expr
                 },
-                Token::Str(s)        => Expr::Str(want_type_suffix(p), s),
-                Token::Ident(s)      => Expr::Ident(s),
+                Token::Str(s) => Expr::Str(want_type_suffix(p), s),
+                Token::Ident(s) => Expr::Ident(s),
                 Token::Constant(val) => match want_type_suffix(p) {
                     Type::U8    => Expr::Const(IntVal::U8(val as u8)),
                     Type::I8    => Expr::Const(IntVal::I8(val as i8)),
@@ -397,7 +400,7 @@ impl<'source> Iterator for Parser<'source> {
         }
 
         fn want_type(p: &mut Parser) -> Type {
-            match std::mem::replace(&mut p.tmp, p.lex.next()).unwrap() {
+            match p.next_token() {
                 Token::U8   => Type::U8,
                 Token::I8   => Type::I8,
                 Token::U16  => Type::U16,
@@ -464,29 +467,35 @@ impl<'source> Iterator for Parser<'source> {
             r
         }
 
-        fn want_initializer(p: &mut Parser, r#type: &Type) {
-            match r#type {
-                Type::Record(record) => {
-                    panic!("FIXME: record initializer")
-                },
-                Type::Array { elem_type, elem_count } => {
-                    want!(p, Token::LCurly, "Invalid array initializer!");
-                    for i in 0..*elem_count {
-                        want_initializer(p, elem_type);
-                        if i < elem_count - 1 {
-                            want!(p, Token::Comma, "Invalid array initializer!");
-                        }
+        fn want_initializer(p: &mut Parser) -> Init {
+            if maybe_want!(p, Token::LCurly) {
+                let mut list = Vec::new();
+                while !maybe_want!(p, Token::RCurly) {
+                    list.push(want_initializer(p));
+                    if !maybe_want!(p, Token::Comma) {
+                        want!(p, Token::RCurly, "Expected right curly");
+                        break;
                     }
-                    maybe_want!(p, Token::Comma);
-                    want!(p, Token::RCurly, "Invalid array initializer!");
-                },
-                _ => { want_expr(p); },
+                }
+                Init::List(list)
+            } else {
+                Init::Base(want_expr(p))
             }
         }
 
-        fn want_stmt(p: &mut Parser, func: &mut Func) -> Stmt {
+        fn want_stmt(p: &mut Parser) -> Stmt {
             let stmt = match std::mem::replace(
                     &mut p.tmp, p.lex.next()).unwrap() {
+                Token::Auto     => {
+                    let ident = want_ident(p);
+                    want!(p, Token::Colon, "Expected :");
+                    let r#type = want_type(p);
+                    let mut init = None;
+                    if maybe_want!(p, Token::Eq) {
+                        init = Some(want_initializer(p));
+                    }
+                    Stmt::Auto(ident, r#type, init)
+                },
                 Token::Label(s) => Stmt::Label(s),
                 Token::Set      => {
                     let var = want_expr(p);
@@ -539,8 +548,11 @@ impl<'source> Iterator for Parser<'source> {
             stmt
         }
 
-        loop {
-            match std::mem::replace(&mut self.tmp, self.lex.next())? {
+        let mut statics = Vec::new();
+        let mut funcs = Vec::new();
+
+        while !self.tmp.is_none() {
+            match self.next_token() {
                 Token::Record => {
                     let ident = want_ident(self);
                     let record = want_record(self, false);
@@ -556,15 +568,24 @@ impl<'source> Iterator for Parser<'source> {
                     let ident = want_ident(self);
                     want!(self, Token::Colon, "Expected :");
                     let r#type = want_type(self);
-                    println!("static {:?}: {:?}", ident, r#type);
+                    let mut init = None;
                     if maybe_want!(self, Token::Eq) {
-                        want_initializer(self, &r#type)
+                        init = Some(want_initializer(self));
                     }
-                    want!(self, Token::Semicolon, "Expected ;")
+                    want!(self, Token::Semicolon, "Expected ;");
+
+                    statics.push(Static {
+                        export: export,
+                        name: ident,
+                        r#type: r#type,
+                        init: init
+                    });
                 },
                 Token::Fn => {
                     let export = maybe_want!(self, Token::Export);
-                    let mut func = Func::new(want_ident(self));
+                    let mut func = Func::new(export, want_ident(self));
+
+                    // Read parameters
                     want!(self, Token::LParen, "Expected (");
                     while !maybe_want!(self, Token::RParen) {
                         let ident = want_ident(self);
@@ -577,24 +598,18 @@ impl<'source> Iterator for Parser<'source> {
                         }
                     }
 
+                    // Read body
                     want!(self, Token::LCurly, "Expected left curly");
                     while !maybe_want!(self, Token::RCurly) {
-                        if maybe_want!(self, Token::Auto) {
-                            let ident = want_ident(self);
-                            want!(self, Token::Colon, "Expected :");
-                            let r#type = want_type(self);
-                            if maybe_want!(self, Token::Eq) {
-                                want_initializer(self, &r#type)
-                            }
-                            want!(self, Token::Semicolon, "Expected ;");
-                        } else {
-                            let stmt = want_stmt(self, &mut func);
-                            func.stmts.push(stmt);
-                        }
+                        func.stmts.push(want_stmt(self));
                     }
+
+                    funcs.push(func);
                 },
                 _ => panic!("Expected record, union, static or function!"),
             }
         }
+
+        (statics, funcs)
     }
 }

@@ -59,7 +59,7 @@ fn ch(lex: &mut Lexer) -> usize {
     result
 }
 
-fn symtab_put(lex: &mut Lexer, s: &str) -> Rc<str> {
+fn symtab_put(s: &str) -> Rc<str> {
     unsafe {
         if let None = SYMTAB {
             SYMTAB = Some(HashSet::new());
@@ -71,11 +71,11 @@ fn symtab_put(lex: &mut Lexer, s: &str) -> Rc<str> {
 fn str(lex: &mut Lexer) -> Rc<str> {
     // FIXME: parse escape sequences
     let s = lex.slice();
-    symtab_put(lex, &s[1..s.len() - 1])
+    symtab_put(&s[1..s.len() - 1])
 }
 
 fn ident(lex: &mut Lexer) -> Rc<str> {
-    symtab_put(lex, &lex.slice()[1..])
+    symtab_put(&lex.slice()[1..])
 }
 
 #[derive(logos::Logos, Debug)]
