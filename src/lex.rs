@@ -51,6 +51,7 @@ fn hex(lex: &mut Lexer) -> usize {
 }
 
 fn ch(lex: &mut Lexer) -> usize {
+    // FIXME: parse escape sequences
     let mut result = 0usize;
     for ch in lex.slice().as_bytes() {
         result = result << 8 | *ch as usize;
@@ -58,19 +59,23 @@ fn ch(lex: &mut Lexer) -> usize {
     result
 }
 
-fn str(lex: &mut Lexer) -> String {
-    lex.slice().to_string()
-}
-
-fn ident(lex: &mut Lexer) -> Rc<str> {
-    let nosuf = &lex.slice()[1..];
+fn symtab_put(lex: &mut Lexer, s: &str) -> Rc<str> {
     unsafe {
         if let None = SYMTAB {
             SYMTAB = Some(HashSet::new());
         }
-        SYMTAB.as_mut().unwrap()
-            .get_or_insert(nosuf.into()).clone()
+        SYMTAB.as_mut().unwrap().get_or_insert(s.into()).clone()
     }
+}
+
+fn str(lex: &mut Lexer) -> Rc<str> {
+    // FIXME: parse escape sequences
+    let s = lex.slice();
+    symtab_put(lex, &s[1..s.len() - 1])
+}
+
+fn ident(lex: &mut Lexer) -> Rc<str> {
+    symtab_put(lex, &lex.slice()[1..])
 }
 
 #[derive(logos::Logos, Debug)]
@@ -118,7 +123,7 @@ pub enum Token {
     Constant(usize),
 
     #[regex(r#""(\\.|[^\\"])*""#, str)]
-    Str(String),
+    Str(Rc<str>),
 
     // Indentifiers, labels
     #[regex(r"\$[a-zA-Z_][a-zA-Z0-9_]*", ident)]
@@ -169,6 +174,8 @@ pub enum Token {
     Colon,     // :
     #[token(",")]
     Comma,     // ,
+    #[token("as")]
+    Cast,      // cast operator
 
     // Statements
     #[token("set")]
@@ -188,5 +195,6 @@ pub enum Token {
 
     #[error]
     #[regex(r"[ \t\n\f\v]+", logos::skip)]
+    #[regex(r"//.*\n", logos::skip)]
     Error,
 }

@@ -22,14 +22,13 @@ fn export $main($argc: i32, $argv: **u8) {
     set $ui = 5u8;
 
     auto $bar: i32 = 5i32; // initialized auto storage
-    auto $foo: i32 = (5i32 + $bar) & $ui as i32; // initialized with expression
+    auto $foo: i32 = (5i32 + $bar) & $ui as i32;
 
     jeq @a, $bar, 5i32; // jumps based on comparisons
     jl @a, $bar, 10i32;
     jg @a, $bar, 15i32;
 
 @a:
-    static $foobar: i16 = 5i16; // initialized .data storage
     jmp @a; // unconditional jump
 
     set $bar = 6i32; // re-assingment (if I ever do SSA there will be phis instead)

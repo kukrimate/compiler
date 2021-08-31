@@ -115,22 +115,23 @@ impl IntVal {
 type Auto = (Type, usize);
 type Static = (Type, Storage);
 
-//
-// Functions
-//
-
 #[derive(Debug)]
 pub enum Var {
     Auto(Rc<Auto>),
     Static(Rc<Static>),
 }
 
+//
+// Functions
+//
+
 #[derive(Debug)]
 pub enum Expr {
     // Constant value
     Const(IntVal),
-    // Variable reference
-    Var(Var),
+    // Identifier
+    Ident(Rc<str>),
+    Str(Type, Rc<str>),
     // Pointer ref/deref
     Ref(Box<Expr>),
     Deref(Box<Expr>),
@@ -170,10 +171,23 @@ pub enum Stmt {
 pub struct Func {
     // Function name
     pub name: Rc<str>,
+    // Parameters
+    pub params: HashMap<Rc<str>, Type>,
     // Local variables
     pub locals: HashMap<Rc<str>, Var>,
     // Statements
     pub stmts: Vec<Stmt>,
+}
+
+impl Func {
+    fn new(name: Rc<str>) -> Func {
+        Func {
+            name: name,
+            params: HashMap::new(),
+            locals: HashMap::new(),
+            stmts: Vec::new(),
+        }
+    }
 }
 
 //
@@ -226,39 +240,84 @@ impl<'source> Iterator for Parser<'source> {
         }
 
         fn want_ident(p: &mut Parser) -> Rc<str> {
-            match p.tmp {
+            match &p.tmp {
                 Some(Token::Ident(_)) => {
                     if let Some(Token::Ident(s))
                             = std::mem::replace(&mut p.tmp, p.lex.next()) {
                         s
                     } else {
-                        panic!("UNREACHABLE")
+                        unreachable!()
                     }
                 },
-                _ => panic!("Expected identifier!"),
+                tok @ _ => panic!("Expected identifier, got {:?}!", tok),
             }
         }
 
-        fn want_constant(p: &mut Parser) -> Expr {
-            let val = match std::mem::replace(&mut p.tmp, p.lex.next()).unwrap() {
-                Token::Constant(val) => val,
-                _ => panic!("Invalid constant value!"),
-            };
+        fn want_label(p: &mut Parser) -> Rc<str> {
+            match &p.tmp {
+                Some(Token::Label(_)) => {
+                    if let Some(Token::Label(s))
+                            = std::mem::replace(&mut p.tmp, p.lex.next()) {
+                        s
+                    } else {
+                        unreachable!()
+                    }
+                },
+                tok @ _ => panic!("Expected label, got {:?}!", tok),
+            }
+        }
+
+        fn want_type_suffix(p: &mut Parser) -> Type {
             match std::mem::replace(&mut p.tmp, p.lex.next()).unwrap() {
-                Token::U8   => Expr::Const(IntVal::U8(val as u8)),
-                Token::I8   => Expr::Const(IntVal::I8(val as i8)),
-                Token::U16  => Expr::Const(IntVal::U16(val as u16)),
-                Token::I16  => Expr::Const(IntVal::I16(val as i16)),
-                Token::U32  => Expr::Const(IntVal::U32(val as u32)),
-                Token::I32  => Expr::Const(IntVal::I32(val as i32)),
-                Token::U64  => Expr::Const(IntVal::U64(val as u64)),
-                Token::I64  => Expr::Const(IntVal::I64(val as i64)),
-                _ => panic!("Invalid constant suffix!"),
+                Token::U8   => Type::U8,
+                Token::I8   => Type::I8,
+                Token::U16  => Type::U16,
+                Token::I16  => Type::I16,
+                Token::U32  => Type::U32,
+                Token::I32  => Type::I32,
+                Token::U64  => Type::U32,
+                Token::I64  => Type::I64,
+                _ => panic!("Invalid type suffix!"),
+            }
+        }
+
+        fn want_value(p: &mut Parser) -> Expr {
+            match std::mem::replace(&mut p.tmp, p.lex.next()).unwrap() {
+                Token::Str(s)        => Expr::Str(want_type_suffix(p), s),
+                Token::Ident(s)      => Expr::Ident(s),
+                Token::Constant(val) => match want_type_suffix(p) {
+                    Type::U8    => Expr::Const(IntVal::U8(val as u8)),
+                    Type::I8    => Expr::Const(IntVal::I8(val as i8)),
+                    Type::U16   => Expr::Const(IntVal::U16(val as u16)),
+                    Type::I16   => Expr::Const(IntVal::I16(val as i16)),
+                    Type::U32   => Expr::Const(IntVal::U32(val as u32)),
+                    Type::I32   => Expr::Const(IntVal::I32(val as i32)),
+                    Type::U64   => Expr::Const(IntVal::U64(val as u64)),
+                    Type::I64   => Expr::Const(IntVal::I64(val as i64)),
+                    _ => unreachable!(),
+                },
+                _ => panic!("Invalid constant value!"),
+            }
+        }
+
+        fn want_unary(p: &mut Parser) -> Expr {
+            if maybe_want!(p, Token::Sub) {
+                Expr::Neg(Box::from(want_unary(p)))
+            } else if maybe_want!(p, Token::Add) {
+                want_unary(p)
+            } else if maybe_want!(p, Token::Tilde) {
+                Expr::Inv(Box::from(want_unary(p)))
+            } else if maybe_want!(p, Token::Mul) {
+                Expr::Deref(Box::from(want_unary(p)))
+            } else if maybe_want!(p, Token::And) {
+                Expr::Ref(Box::from(want_unary(p)))
+            } else {
+                want_value(p)
             }
         }
 
         fn want_expr(p: &mut Parser) -> Expr {
-
+            want_unary(p)
         }
 
         fn want_type(p: &mut Parser) -> Type {
@@ -275,7 +334,7 @@ impl<'source> Iterator for Parser<'source> {
                 Token::LSq  => {
                     let elem_type = Box::new(want_type(p));
                     want!(p, Token::Semicolon, "Expected ;");
-                    let elem_count_expr = want_constant(p);
+                    let elem_count_expr = want_expr(p);
                     want!(p, Token::RSq, "Expected ]");
                     let elem_count = match elem_count_expr {
                         Expr::Const(intval) => intval.as_usize(),
@@ -313,19 +372,95 @@ impl<'source> Iterator for Parser<'source> {
                 fields: HashMap::new()
             };
             // Read fields until }
-            while !maybe_want!(p, Token::RSq) {
+            want!(p, Token::LCurly, "Expected left curly");
+            while !maybe_want!(p, Token::RCurly) {
                 let ident = want_ident(p);
                 want!(p, Token::Colon, "Expected :");
                 let r#type = want_type(p);
                 r.fields.insert(ident, r#type);
                 if !maybe_want!(p, Token::Comma) {
-                    want!(p, Token::RSq, "Expected right curly");
+                    want!(p, Token::RCurly, "Expected right curly");
                     break;
                 }
             }
             // Record type declaration must end in semicolon
             want!(p, Token::Semicolon, "Expected ;");
             r
+        }
+
+        fn want_initializer(p: &mut Parser, r#type: &Type) {
+            match r#type {
+                Type::Record(record) => {
+                    panic!("FIXME: record initializer")
+                },
+                Type::Array { elem_type, elem_count } => {
+                    want!(p, Token::LCurly, "Invalid array initializer!");
+                    for i in 0..*elem_count {
+                        want_initializer(p, elem_type);
+                        if i < elem_count - 1 {
+                            want!(p, Token::Comma, "Invalid array initializer!");
+                        }
+                    }
+                    maybe_want!(p, Token::Comma);
+                    want!(p, Token::RCurly, "Invalid array initializer!");
+                },
+                _ => { want_expr(p); },
+            }
+        }
+
+        fn want_stmt(p: &mut Parser, func: &mut Func) -> Stmt {
+            let stmt = match std::mem::replace(
+                    &mut p.tmp, p.lex.next()).unwrap() {
+                Token::Label(s) => Stmt::Label(s),
+                Token::Set      => {
+                    let var = want_expr(p);
+                    want!(p, Token::Eq, "Expected =");
+                    Stmt::Set(var, want_expr(p))
+                },
+                Token::Jmp      => Stmt::Jmp(want_label(p)),
+                Token::Jeq      => {
+                    let label = want_label(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    let expr1 = want_expr(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    Stmt::Jeq(label, expr1, want_expr(p))
+                },
+                Token::Jl       => {
+                    let label = want_label(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    let expr1 = want_expr(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    Stmt::Jl(label, expr1, want_expr(p))
+                },
+                Token::Jle      => {
+                    let label = want_label(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    let expr1 = want_expr(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    Stmt::Jle(label, expr1, want_expr(p))
+                },
+                Token::Jg       => {
+                    let label = want_label(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    let expr1 = want_expr(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    Stmt::Jg(label, expr1, want_expr(p))
+                },
+                Token::Jge      => {
+                    let label = want_label(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    let expr1 = want_expr(p);
+                    want!(p, Token::Comma, "Expected ,");
+                    Stmt::Jge(label, expr1, want_expr(p))
+                },
+                _ => panic!("Invalid statement!"),
+            };
+            if let Stmt::Label(_) = stmt {
+                want!(p, Token::Colon, "Expected :");
+            } else {
+                want!(p, Token::Semicolon, "Expected ;");
+            }
+            stmt
         }
 
         loop {
@@ -347,13 +482,39 @@ impl<'source> Iterator for Parser<'source> {
                     let r#type = want_type(self);
                     println!("static {:?}: {:?}", ident, r#type);
                     if maybe_want!(self, Token::Eq) {
-                        panic!("FIXME: initializer list!");
+                        want_initializer(self, &r#type)
                     }
                     want!(self, Token::Semicolon, "Expected ;")
                 },
                 Token::Fn => {
                     let export = maybe_want!(self, Token::Export);
-                    let ident = want_ident(self);
+                    let mut func = Func::new(want_ident(self));
+                    want!(self, Token::LParen, "Expected (");
+                    while !maybe_want!(self, Token::RParen) {
+                        let ident = want_ident(self);
+                        want!(self, Token::Colon, "Expected :");
+                        let r#type = want_type(self);
+                        func.params.insert(ident, r#type);
+                        if !maybe_want!(self, Token::Comma) {
+                            want!(self, Token::RParen, "Expected )");
+                            break;
+                        }
+                    }
+
+                    want!(self, Token::LCurly, "Expected left curly");
+                    while !maybe_want!(self, Token::RCurly) {
+                        if maybe_want!(self, Token::Auto) {
+                            let ident = want_ident(self);
+                            want!(self, Token::Colon, "Expected :");
+                            let r#type = want_type(self);
+                            if maybe_want!(self, Token::Eq) {
+                                want_initializer(self, &r#type)
+                            }
+                            want!(self, Token::Semicolon, "Expected ;");
+                        }
+                        let stmt = want_stmt(self, &mut func);
+                        func.stmts.push(stmt);
+                    }
                 },
                 _ => panic!("Expected record, union, static or function!"),
             }
