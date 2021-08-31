@@ -1,0 +1,105 @@
+EBNF grammar for the text representation of the IL.
+
+<file> ::= {<file-element>}*
+
+<file-element> ::= <static-declaration>
+                 | <record-declaration>
+                 | <function-declaration>
+
+<static-declaration> ::= static [export] <declaration> [= <initializer>] ;
+
+<record-declaration> ::= <record-or-union> <identifier> { <declaration-list> } ;
+
+<function-declaration> ::= fn [export] <identifier> ( <declaration-list> ) -> <type-declaration> { {<statement>}* }
+
+<record-or-union> ::= record
+                    | union
+
+<declaration-list> ::= <declaration>
+                      | <declaration-list> , <declaration>
+
+<declaration> ::= <identifier> : <type-declaration>
+
+<initializer> ::= <expression>
+                | { <initializer-list> }
+
+<initializer-list> ::= <initializer>
+                     | <initializer-list> , <initializer>
+
+<type-declaration> ::= u8
+                     | i8
+                     | u16
+                     | i16
+                     | u32
+                     | i32
+                     | u64
+                     | i64
+                     | record <identifier>
+                     | union <identifier>
+                     | * <type-declaration>
+                     | [ <type-declaration> ; <expression> ]
+
+<statement> ::= <label>
+              | auto <declaration> [= <initializer>] ;
+              | set <expression> , <expression> ;
+              | jmp <label> ;
+              | <conditional-jump> <label> , <expression> , <expression> ;
+
+<conditional-jump> ::= jeq
+                     | jl
+                     | jle
+                     | jg
+                     | jge
+
+<expression> ::= <or-expression>
+
+<or-expression> ::= <xor-expression>
+                  | <or-expression> | <or-expression>
+
+<xor-expression> ::= <and-expression>
+                   | <xor-expression> ^ <xor-expression>
+
+<and-expression> ::= <shift-expression>
+                   | <and-expression> & <and-expression>
+
+<shift-expression> ::= <additive-expression>
+                     | <shift-expression> << <shift-expression>
+                     | <shift-expression> >> <shift-expression>
+
+<additive-expression> ::= <multiplicative-expression>
+                        | <additive-expression> + <additive-expression>
+                        | <additive-expression> - <additive-expression>
+
+<multiplicative-expression> ::= <cast-expression>
+                              | <multiplicative-expression> * <multiplicative-expression>
+                              | <multiplicative-expression> / <multiplicative-expression>
+                              | <multiplicative-expression> % <multiplicative-expression>
+
+<cast-expression> ::= <unary-expression>
+                    | <cast-expression> as <type-declaration>
+
+<unary-expression> ::= <postfix-expression>
+                     | + <unary-expression>
+                     | - <unary-expression>
+                     | ~ <unary-expression>
+                     | & <unary-expression>
+                     | * <unary-expression>
+
+<postfix-expression> ::= <primary-expression>
+                       | <postfix-expression> [ <expression> ]
+                       | <postfix-expression> . <identifier>
+
+<primary-expression> ::= ( <expression> )
+                       | <string-literal> <type-suffix>
+                       | <integer-constant> <type-suffix>
+                       | <char-constant> <type-suffix>
+                       | <identifier>
+
+<type-suffix> ::= u8
+                | i8
+                | u16
+                | i16
+                | u32
+                | i32
+                | u64
+                | i64
