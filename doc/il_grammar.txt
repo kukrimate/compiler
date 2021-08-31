@@ -6,11 +6,11 @@ EBNF grammar for the text representation of the IL.
                  | <record-declaration>
                  | <function-declaration>
 
-<static-declaration> ::= static [export] <declaration> [= <initializer>] ;
+<static-declaration> ::= static [extern | export] <declaration> [= <initializer>] ;
 
 <record-declaration> ::= <record-or-union> <identifier> { <declaration-list> } ;
 
-<function-declaration> ::= fn [export] <identifier> ( <declaration-list> ) -> <type-declaration> { {<statement>}* }
+<function-declaration> ::= fn [extern | export] <identifier> ( <declaration-list> ) -> <type-declaration> { {<statement>}* }
 
 <record-or-union> ::= record
                     | union

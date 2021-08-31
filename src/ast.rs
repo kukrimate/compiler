@@ -163,9 +163,16 @@ pub enum Stmt {
 }
 
 #[derive(Debug)]
+pub enum Vis {
+    Private,    // Internal definition
+    Export,     // Exported definition
+    Extern,     // External definition reference
+}
+
+#[derive(Debug)]
 pub struct Static {
-    // Is it exported?
-    pub export: bool,
+    // Visibility
+    pub vis: Vis,
     // Function name
     pub name: Rc<str>,
     // Type of static
@@ -176,8 +183,8 @@ pub struct Static {
 
 #[derive(Debug)]
 pub struct Func {
-    // Is it exported?
-    pub export: bool,
+    // Visibility
+    pub vis: Vis,
     // Function name
     pub name: Rc<str>,
     // Parameters
@@ -187,9 +194,9 @@ pub struct Func {
 }
 
 impl Func {
-    fn new(export: bool, name: Rc<str>) -> Func {
+    fn new(vis: Vis, name: Rc<str>) -> Func {
         Func {
-            export: export,
+            vis: vis,
             name: name,
             params: HashMap::new(),
             stmts: Vec::new(),
@@ -267,6 +274,16 @@ impl<'source> Parser<'source> {
                     }
                 },
                 tok @ _ => panic!("Expected label, got {:?}!", tok),
+            }
+        }
+
+        fn maybe_want_vis(p: &mut Parser) -> Vis {
+            if maybe_want!(p, Token::Export) {
+                Vis::Export
+            } else if maybe_want!(p, Token::Extern) {
+                Vis::Extern
+            } else {
+                Vis::Private
             }
         }
 
@@ -564,7 +581,7 @@ impl<'source> Parser<'source> {
                     self.records.insert(ident, Rc::from(union));
                 },
                 Token::Static => {
-                    let export = maybe_want!(self, Token::Export);
+                    let vis = maybe_want_vis(self);
                     let ident = want_ident(self);
                     want!(self, Token::Colon, "Expected :");
                     let r#type = want_type(self);
@@ -575,15 +592,15 @@ impl<'source> Parser<'source> {
                     want!(self, Token::Semicolon, "Expected ;");
 
                     statics.push(Static {
-                        export: export,
+                        vis: vis,
                         name: ident,
                         r#type: r#type,
                         init: init
                     });
                 },
                 Token::Fn => {
-                    let export = maybe_want!(self, Token::Export);
-                    let mut func = Func::new(export, want_ident(self));
+                    let vis = maybe_want_vis(self);
+                    let mut func = Func::new(vis, want_ident(self));
 
                     // Read parameters
                     want!(self, Token::LParen, "Expected (");

@@ -113,6 +113,8 @@ pub enum Token {
     // Declaration markers
     #[token("export")]
     Export,
+    #[token("extern")]
+    Extern,
 
     // Constants
     #[regex(r"0b[0-1]+", bin)]
