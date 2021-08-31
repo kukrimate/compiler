@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use super::ast::IntVal;
 use super::ast::Type;
 

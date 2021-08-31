@@ -8,9 +8,12 @@ EBNF grammar for the text representation of the IL.
 
 <static-declaration> ::= static [extern | export] <declaration> [= <initializer>] ;
 
-<record-declaration> ::= <record-or-union> <identifier> { <declaration-list> } ;
+<record-declaration> ::= <record-or-union> <identifier> { [<declaration-list>] } ;
 
-<function-declaration> ::= fn [extern | export] <identifier> ( <declaration-list> ) -> <type-declaration> { {<statement>}* }
+<function-declaration> ::= fn [extern | export] <identifier> ( [<declaration-list>] ) [-> <type-declaration>] <function-body-or-semicolon>
+
+<function-body-or-semicolon> ::= ;
+                               | { {<statement>}* }
 
 <record-or-union> ::= record
                     | union
@@ -40,10 +43,12 @@ EBNF grammar for the text representation of the IL.
                      | [ <type-declaration> ; <expression> ]
 
 <statement> ::= <label> :
-              | auto <declaration> [= <initializer>] ;
-              | set <expression> , <expression> ;
-              | jmp <label> ;
               | <conditional-jump> <label> , <expression> , <expression> ;
+              | jmp <label> ;
+              | auto <declaration> [= <initializer>] ;
+              | eval <expression> ;
+              | set <expression> , <expression> ;
+              | ret <expression> ;
 
 <conditional-jump> ::= jeq
                      | jl
@@ -86,6 +91,7 @@ EBNF grammar for the text representation of the IL.
                      | * <unary-expression>
 
 <postfix-expression> ::= <primary-expression>
+                       | <postfix-expression> ( [<expression-list>] )
                        | <postfix-expression> [ <expression> ]
                        | <postfix-expression> . <identifier>
 
@@ -103,3 +109,6 @@ EBNF grammar for the text representation of the IL.
                 | i32
                 | u64
                 | i64
+
+<expression-list> ::= <expression>
+                    | <expression-list> , <expression>

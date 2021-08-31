@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use logos;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -176,10 +178,18 @@ pub enum Token {
     Colon,     // :
     #[token(",")]
     Comma,     // ,
+    #[token(".")]
+    Dot,       // .
     #[token("as")]
     Cast,      // cast operator
+    #[token("->")]
+    Arrow,     // function return type
 
     // Statements
+    #[token("eval")]
+    Eval,
+    #[token("ret")]
+    Ret,
     #[token("set")]
     Set,
     #[token("jmp")]

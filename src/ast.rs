@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use super::lex::{Lexer,Token};
 
 use std::collections::HashMap;
@@ -126,6 +128,10 @@ pub enum Expr {
     // Unary operations
     Inv(Box<Expr>),
     Neg(Box<Expr>),
+    // Postfix expressions
+    Field(Box<Expr>, Rc<str>),
+    Elem(Box<Expr>, Box<Expr>),
+    Call(Box<Expr>, Vec<Expr>),
     // Binary operations
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
@@ -137,8 +143,6 @@ pub enum Expr {
     Xor(Box<Expr>, Box<Expr>),
     Lsh(Box<Expr>, Box<Expr>),
     Rsh(Box<Expr>, Box<Expr>),
-    // Field of a record/union
-    Field(Box<Expr>, Rc<str>),
     // Cast
     Cast(Box<Expr>, Type)
 }
@@ -151,6 +155,8 @@ pub enum Init {
 
 #[derive(Debug)]
 pub enum Stmt {
+    Eval(Expr),
+    Ret(Expr),
     Auto(Rc<str>, Type, Option<Init>),
     Label(Rc<str>),
     Set(Expr, Expr),
@@ -189,6 +195,8 @@ pub struct Func {
     pub name: Rc<str>,
     // Parameters
     pub params: HashMap<Rc<str>, Type>,
+    // Return type
+    pub rettype: Option<Type>,
     // Statements
     pub stmts: Vec<Stmt>,
 }
@@ -199,6 +207,7 @@ impl Func {
             vis: vis,
             name: name,
             params: HashMap::new(),
+            rettype: None,
             stmts: Vec::new(),
         }
     }
@@ -325,19 +334,43 @@ impl<'source> Parser<'source> {
             }
         }
 
+        fn want_postfix(p: &mut Parser) -> Expr {
+            let mut expr = want_primary(p);
+
+            loop {
+                if maybe_want!(p, Token::Dot) {
+                    expr = Expr::Field(Box::from(expr), want_ident(p));
+                } else if maybe_want!(p, Token::LParen) {
+                    let mut args = Vec::new();
+                    while !maybe_want!(p, Token::RParen) {
+                        args.push(want_expr(p));
+                        if !maybe_want!(p, Token::Comma) {
+                            want!(p, Token::RParen, "Expected )");
+                            break;
+                        }
+                    }
+                    expr = Expr::Call(Box::from(expr), args);
+                } else if maybe_want!(p, Token::LSq) {
+                    expr = Expr::Elem(Box::from(expr), Box::from(want_expr(p)));
+                } else {
+                    return expr;
+                }
+            }
+        }
+
         fn want_unary(p: &mut Parser) -> Expr {
             if maybe_want!(p, Token::Sub) {
                 Expr::Neg(Box::from(want_unary(p)))
-            } else if maybe_want!(p, Token::Add) {
-                want_unary(p)
             } else if maybe_want!(p, Token::Tilde) {
                 Expr::Inv(Box::from(want_unary(p)))
             } else if maybe_want!(p, Token::Mul) {
                 Expr::Deref(Box::from(want_unary(p)))
             } else if maybe_want!(p, Token::And) {
                 Expr::Ref(Box::from(want_unary(p)))
+            } else if maybe_want!(p, Token::Add) {
+                want_unary(p)
             } else {
-                want_primary(p)
+                want_postfix(p)
             }
         }
 
@@ -503,6 +536,8 @@ impl<'source> Parser<'source> {
         fn want_stmt(p: &mut Parser) -> Stmt {
             let stmt = match std::mem::replace(
                     &mut p.tmp, p.lex.next()).unwrap() {
+                Token::Eval     => Stmt::Eval(want_expr(p)),
+                Token::Ret      => Stmt::Ret(want_expr(p)),
                 Token::Auto     => {
                     let ident = want_ident(p);
                     want!(p, Token::Colon, "Expected :");
@@ -615,10 +650,17 @@ impl<'source> Parser<'source> {
                         }
                     }
 
-                    // Read body
-                    want!(self, Token::LCurly, "Expected left curly");
-                    while !maybe_want!(self, Token::RCurly) {
-                        func.stmts.push(want_stmt(self));
+                    // Read return type (if any)
+                    if maybe_want!(self, Token::Arrow) {
+                        func.rettype = Some(want_type(self));
+                    }
+
+                    // Read body (if present)
+                    if !maybe_want!(self, Token::Semicolon) {
+                        want!(self, Token::LCurly, "Expected left curly");
+                        while !maybe_want!(self, Token::RCurly) {
+                            func.stmts.push(want_stmt(self));
+                        }
                     }
 
                     funcs.push(func);

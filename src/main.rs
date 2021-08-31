@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 #![feature(hash_set_entry)]
 
 mod ast;
