@@ -35,7 +35,8 @@ pub enum Type {
     Record(Rc<Record>),
 }
 
-/*
+pub const PTR_SIZE: usize = 8;
+
 impl Type {
     pub fn get_size(&self) -> usize {
         match self {
@@ -65,7 +66,6 @@ impl Type {
         }
     }
 }
-*/
 
 //
 // Integer constant value
@@ -168,7 +168,7 @@ pub enum Stmt {
     Jge(Rc<str>, Expr, Expr),
 }
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub enum Vis {
     Private,    // Internal definition
     Export,     // Exported definition
@@ -194,7 +194,7 @@ pub struct Func {
     // Function name
     pub name: Rc<str>,
     // Parameters
-    pub params: HashMap<Rc<str>, Type>,
+    pub params: Vec<(Rc<str>, Type)>,
     // Return type
     pub rettype: Option<Type>,
     // Statements
@@ -206,7 +206,7 @@ impl Func {
         Func {
             vis: vis,
             name: name,
-            params: HashMap::new(),
+            params: Vec::new(),
             rettype: None,
             stmts: Vec::new(),
         }
@@ -643,7 +643,7 @@ impl<'source> Parser<'source> {
                         let ident = want_ident(self);
                         want!(self, Token::Colon, "Expected :");
                         let r#type = want_type(self);
-                        func.params.insert(ident, r#type);
+                        func.params.push((ident, r#type));
                         if !maybe_want!(self, Token::Comma) {
                             want!(self, Token::RParen, "Expected )");
                             break;
