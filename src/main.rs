@@ -34,14 +34,35 @@ fn gen_static_init(init: &Init, dest: &mut Vec<u8>) {
     }
 }
 
-fn gen_expr(in_expr: &Expr,
+// enum Loc {
+//     Static(Rc<str>),    // Global variable
+//     Stack(usize),       // Local variable
+//     Offset,
+// }
+
+static mut LITNO: usize = 0;
+
+fn gen_expr(
+        accum: &str,
+        in_expr: &Expr,
         locals: &HashMap<Rc<str>, usize>,
         data: &mut HashMap<Rc<str>, Vec<u8>>) {
     match in_expr {
-        Expr::Const(_) => (),
-        Expr::Ident(_) => (),
-        Expr::Str(_, _) => (),
-        Expr::Ref(ref expr) => gen_expr(expr, locals, data),
+        Expr::Const(intval) => println!("mov {}, {}", accum, intval.as_usize()),
+        // Expr::Ident(_) => (),
+        Expr::Str(_, s) => {
+            let name: Rc<str>;
+            unsafe {
+                name = Rc::from(format!("slit_{}", LITNO));
+                LITNO += 1;
+            };
+            let mut utf8data = Vec::new();
+            utf8data.extend(s.as_bytes());
+            utf8data.push(0);
+            data.insert(name.clone(), utf8data);
+            println!("mov {}, {}", accum, name);
+        },
+        /*Expr::Ref(ref expr) => gen_expr(expr, locals, data),
         Expr::Deref(ref expr) => gen_expr(expr, locals, data),
         Expr::Inv(ref expr) => gen_expr(expr, locals, data),
         Expr::Neg(ref expr) => gen_expr(expr, locals, data),
@@ -49,11 +70,25 @@ fn gen_expr(in_expr: &Expr,
         Expr::Elem(ref expr1, ref expr2) => {
             gen_expr(expr1, locals, data);
             gen_expr(expr2, locals, data);
+        },*/
+        Expr::Call(func, ref params) => {
+            for (i, param) in params.iter().enumerate() {
+                match i {
+                    0 => gen_expr("rdi", param, locals, data),
+                    1 => gen_expr("rsi", param, locals, data),
+                    2 => gen_expr("rdx", param, locals, data),
+                    3 => gen_expr("rcx", param, locals, data),
+                    4 => gen_expr("r8", param, locals, data),
+                    5 => gen_expr("r9", param, locals, data),
+                    _ => panic!("FIXME: too many call params"),
+                }
+            }
+            match &**func {
+                Expr::Ident(name) => println!("call {}", name),
+                _ => panic!("Function name must be an identifier"),
+            }
         },
-        Expr::Call(ref func, ref params) => {
-            panic!("FIXME: function call");
-        },
-        Expr::Add(ref expr1, ref expr2) => {
+        /*Expr::Add(ref expr1, ref expr2) => {
             gen_expr(expr1, locals, data);
             gen_expr(expr2, locals, data);
         },
@@ -94,6 +129,8 @@ fn gen_expr(in_expr: &Expr,
             gen_expr(expr2, locals, data);
         },
         Expr::Cast(ref expr, _) => gen_expr(expr, locals, data),
+        */
+        _ => todo!("expression {:?}", in_expr),
     }
 }
 
@@ -149,13 +186,15 @@ fn gen_func(func: &Func, data: &mut HashMap<Rc<str>, Vec<u8>>) {
         }
     }
 
-    // for stmt in &func.stmts {
-    //     match stmt {
-    //         Stmt::Eval(ref expr) => gen_expr(expr, &locals, data),
-    //         Stmt::Ret(_) => println!("jmp done"),
-    //         _ => panic!("FIXME: statement {:?}", stmt),
-    //     }
-    // }
+    for stmt in &func.stmts {
+        match stmt {
+            Stmt::Eval(ref expr) => {
+                gen_expr("rax", expr, &locals, data)
+            },
+            Stmt::Ret(_) => println!("jmp done"),
+            _ => todo!("statement {:?}", stmt),
+        }
+    }
 
     // Generate function epilogue
     println!("done:\nleave\nret");
