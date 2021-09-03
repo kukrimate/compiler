@@ -73,7 +73,7 @@ impl<'source> Parser<'source> {
             Static {
                 vis: Vis::Private,
                 name: name.clone(),
-                r#type: Type::Array {
+                dtype: Type::Array {
                     elem_count: list.len(),
                     elem_type: Box::from(Type::U8),
                 },
@@ -444,7 +444,7 @@ impl<'source> Parser<'source> {
                     let vis = self.maybe_want_vis();
                     let ident = self.want_ident();
                     want!(self, Token::Colon, "Expected :");
-                    let r#type = self.want_type();
+                    let dtype = self.want_type();
                     let mut init = None;
                     if maybe_want!(self, Token::Eq) {
                         init = Some(self.want_initializer());
@@ -454,7 +454,7 @@ impl<'source> Parser<'source> {
                     self.file.statics.insert(ident.clone(), Static {
                         vis: vis,
                         name: ident,
-                        r#type: r#type,
+                        dtype: dtype,
                         init: init
                     });
                 },
@@ -477,7 +477,7 @@ impl<'source> Parser<'source> {
 
                     // Read return type (if any)
                     if maybe_want!(self, Token::Arrow) {
-                        func.rettype = Some(self.want_type());
+                        func.rettype = self.want_type();
                     }
 
                     // Read body (if present)
@@ -488,7 +488,7 @@ impl<'source> Parser<'source> {
                         }
                     }
 
-                    self.file.funcs.push(func);
+                    self.file.funcs.insert(func.name.clone(), func);
                 },
                 _ => panic!("Expected record, union, static or function!"),
             }

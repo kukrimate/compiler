@@ -17,8 +17,9 @@ pub struct Record {
     pub size: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone,Debug)]
 pub enum Type {
+    VOID,
     U8,
     I8,
     U16,
@@ -42,6 +43,7 @@ pub const PTR_SIZE: usize = 8;
 impl Type {
     pub fn get_size(&self) -> usize {
         match self {
+            Type::VOID => unreachable!(),
             Type::U8  => 1,
             Type::I8  => 1,
             Type::U16 => 2,
@@ -152,7 +154,7 @@ pub struct Static {
     // Function name
     pub name: Rc<str>,
     // Type of static
-    pub r#type: Type,
+    pub dtype: Type,
     // Initializer (if present)
     pub init: Option<Init>,
 }
@@ -166,7 +168,7 @@ pub struct Func {
     // Parameters
     pub params: Vec<(Rc<str>, Type)>,
     // Return type
-    pub rettype: Option<Type>,
+    pub rettype: Type,
     // Statements
     pub stmts: Vec<Stmt>,
 }
@@ -177,7 +179,7 @@ impl Func {
             vis: vis,
             name: name,
             params: Vec::new(),
-            rettype: None,
+            rettype: Type::VOID,
             stmts: Vec::new(),
         }
     }
@@ -187,7 +189,7 @@ impl Func {
 pub struct File {
     pub records: HashMap<Rc<str>, Rc<Record>>,
     pub statics: HashMap<Rc<str>, Static>,
-    pub funcs: Vec<Func>,
+    pub funcs: HashMap<Rc<str>, Func>,
 }
 
 impl File {
@@ -195,7 +197,7 @@ impl File {
         File {
             records: HashMap::new(),
             statics: HashMap::new(),
-            funcs: Vec::new(),
+            funcs: HashMap::new(),
         }
     }
 }
