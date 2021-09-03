@@ -20,6 +20,7 @@ Missing features:
 - Struct return types and arguments (struct pointers work fine)
 - Variable argument support
 - Floating point math
+- (And probably many other things I have missed)
 
 # license
 GPLv2 only.

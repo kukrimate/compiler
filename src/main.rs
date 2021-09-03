@@ -4,32 +4,27 @@
 
 mod ast;
 mod lex;
+mod parser;
 
-use ast::{IntVal,Vis,Init,Func,Stmt,Expr};
+use ast::{Type,Expr,Init,Stmt,Vis,Func,File};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-fn gen_intval(intval: &IntVal, dest: &mut Vec<u8>) {
-    match intval {
-        IntVal::U8(v)  => dest.extend(&v.to_le_bytes()),
-        IntVal::I8(v)  => dest.extend(&v.to_le_bytes()),
-        IntVal::U16(v) => dest.extend(&v.to_le_bytes()),
-        IntVal::I16(v) => dest.extend(&v.to_le_bytes()),
-        IntVal::U32(v) => dest.extend(&v.to_le_bytes()),
-        IntVal::I32(v) => dest.extend(&v.to_le_bytes()),
-        IntVal::U64(v) => dest.extend(&v.to_le_bytes()),
-        IntVal::I64(v) => dest.extend(&v.to_le_bytes()),
-    }
-}
-
-fn gen_static_init(init: &Init, dest: &mut Vec<u8>) {
+fn gen_static_init(init: &Init) {
     match init {
         Init::Base(ref expr) => match expr {
-            Expr::Const(intval) => gen_intval(intval, dest),
+            Expr::U8(v)  => println!("db {}", v),
+            Expr::I8(v)  => println!("db {}", v),
+            Expr::U16(v) => println!("dw {}", v),
+            Expr::I16(v) => println!("dw {}", v),
+            Expr::U32(v) => println!("dd {}", v),
+            Expr::I32(v) => println!("dd {}", v),
+            Expr::U64(v) => println!("dq {}", v),
+            Expr::I64(v) => println!("dq {}", v),
             _ => panic!("FIXME: Static initializer must be a constant"),
         },
         Init::List(ref list) => for i in list {
-            gen_static_init(i, dest);
+            gen_static_init(i);
         },
     }
 }
@@ -39,7 +34,7 @@ fn gen_static_init(init: &Init, dest: &mut Vec<u8>) {
 //
 /*
 enum RefTgt {
-    Immed(IntVal),              // Immediate value
+    Immed(Expr),              // Immediate value
     Static(Rc<str>),            // Global variable
     Stack(usize),               // Local variable
     Offset(Box<RefTgt>, usize), // Offset from another reference
@@ -47,19 +42,29 @@ enum RefTgt {
 */
 
 fn gen_expr(
+        file: &File,
         accum: &str,
         in_expr: &Expr,
-        locals: &HashMap<Rc<str>, usize>) {
+        locals: &HashMap<Rc<str>, (&Type, usize)>) {
     match in_expr {
-        Expr::Const(intval) => println!("mov {}, {}", accum, intval.as_usize()),
+        Expr::U8(v)  => { println!("mov {}, {}", accum, v) },
+        Expr::I8(v)  => { println!("mov {}, {}", accum, v) },
+        Expr::U16(v) => { println!("mov {}, {}", accum, v) },
+        Expr::I16(v) => { println!("mov {}, {}", accum, v) },
+        Expr::U32(v) => { println!("mov {}, {}", accum, v) },
+        Expr::I32(v) => { println!("mov {}, {}", accum, v) },
+        Expr::U64(v) => { println!("mov {}, {}", accum, v) },
+        Expr::I64(v) => { println!("mov {}, {}", accum, v) },
+
         Expr::Ident(ident) => {
-            if let Some(_offset) = locals.get(ident) {
+            if let Some((t, offset)) = locals.get(ident) {
                 todo!("local variable reference");
             } else {
                 // FIXME: don't assume it's always a global and take its address
                 println!("mov {}, {}", accum, ident)
             }
         },
+
         /*Expr::Ref(ref expr) => gen_expr(expr, locals, data),
         Expr::Deref(ref expr) => gen_expr(expr, locals, data),
         Expr::Field(ref expr, _) => gen_expr(expr, locals, data),
@@ -70,12 +75,12 @@ fn gen_expr(
         Expr::Call(func, ref params) => {
             for (i, param) in params.iter().enumerate() {
                 match i {
-                    0 => gen_expr("rdi", param, locals),
-                    1 => gen_expr("rsi", param, locals),
-                    2 => gen_expr("rdx", param, locals),
-                    3 => gen_expr("rcx", param, locals),
-                    4 => gen_expr("r8", param, locals),
-                    5 => gen_expr("r9", param, locals),
+                    0 => gen_expr(file, "rdi", param, locals),
+                    1 => gen_expr(file, "rsi", param, locals),
+                    2 => gen_expr(file, "rdx", param, locals),
+                    3 => gen_expr(file, "rcx", param, locals),
+                    4 => gen_expr(file, "r8", param, locals),
+                    5 => gen_expr(file, "r9", param, locals),
                     _ => panic!("FIXME: too many call params"),
                 }
             }
@@ -134,7 +139,7 @@ fn gen_expr(
     }
 }
 
-fn gen_func(func: &Func) {
+fn gen_func(file: &File, func: &Func) {
     println!("{}:", func.name);
 
     // Generate locals
@@ -148,7 +153,7 @@ fn gen_func(func: &Func) {
             panic!("FIXME: larger-than register parameters!");
         }
         // Add local variable for parameter
-        locals.insert(name.clone(), frame_size);
+        locals.insert(name.clone(), (t, frame_size));
         // Save index to stack offset map
         params.push((i, frame_size));
         // Increase stack frame size
@@ -160,7 +165,7 @@ fn gen_func(func: &Func) {
     for stmt in &func.stmts {
         match stmt {
             Stmt::Auto(name, t, _) => {
-                locals.insert(name.clone(), frame_size);
+                locals.insert(name.clone(), (t, frame_size));
                 frame_size += t.get_size();
             },
             _ => (),
@@ -189,7 +194,7 @@ fn gen_func(func: &Func) {
     for stmt in &func.stmts {
         match stmt {
             Stmt::Eval(ref expr) => {
-                gen_expr("rax", expr, &locals)
+                gen_expr(file, "rax", expr, &locals)
             },
             Stmt::Ret(_) => println!("jmp done"),
             _ => todo!("statement {:?}", stmt),
@@ -209,33 +214,29 @@ fn main() {
     }
 
     let data = std::fs::read_to_string(&args[1]).unwrap();
-
-    let mut lex = lex::Lexer::new(&data);
-    let mut parser = ast::Parser::new(&mut lex);
-    let (statics, funcs) = parser.parse_file();
+    let file = parser::parse_file(&data);
 
     let mut exports = Vec::new();
     let mut externs = Vec::new();
 
-    let mut data = HashMap::new();
     let mut bss = HashMap::new();
 
-    // Collect statics
-    for cur_static in statics {
+    // Generate data
+    println!("section .data");
+    for cur_static in &file.statics {
         match cur_static.vis {
             Vis::Export => exports.push(cur_static.name.clone()),
             Vis::Extern => externs.push(cur_static.name.clone()),
             _ => (),
         };
 
-        match cur_static.init {
+        match &cur_static.init {
             // Generate static initializer in .data
-            Some(init) => {
-                let mut dest = Vec::new();
-                gen_static_init(&init, &mut dest);
-                data.insert(cur_static.name.clone(), dest);
+            Some(ref init) => {
+                println!("{}:", cur_static.name);
+                gen_static_init(init);
             },
-            // Allocate space in .bss
+            // Take note for bss allocation later
             None => {
                 bss.insert(cur_static.name.clone(),
                     cur_static.r#type.get_size());
@@ -243,40 +244,25 @@ fn main() {
         };
     }
 
-    // Collect and tame functions
-    println!("section .text");
-
-    for cur_func in funcs {
-        match cur_func.vis {
-            Vis::Export => exports.push(cur_func.name.clone()),
-            Vis::Extern => externs.push(cur_func.name.clone()),
-            _ => (),
-        };
-        // Generate body for non-extern function
-        if cur_func.vis != Vis::Extern {
-            gen_func(&cur_func);
-        }
-    }
-
-    // Generate data
-    println!("\nsection .data");
-    for (name, bytes) in data {
-        if bytes.len() > 0 {
-            print!("{}: db ", name);
-        } else {
-            print!("{}:", name);
-        }
-
-        for b in bytes {
-            print!("{}, ", b);
-        }
-        println!("");
-    }
-
     // Generate bss
     println!("\nsection .bss");
     for (name, len) in bss {
         println!("{}: resb {}", name, len);
+    }
+
+    // Generate functions
+    println!("section .text");
+
+    for func in &file.funcs {
+        match func.vis {
+            Vis::Export => exports.push(func.name.clone()),
+            Vis::Extern => externs.push(func.name.clone()),
+            _ => (),
+        };
+        // Generate body for non-extern function
+        if func.vis != Vis::Extern {
+            gen_func(&file, &func);
+        }
     }
 
     // Generate markers
