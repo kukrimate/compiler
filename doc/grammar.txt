@@ -1,5 +1,3 @@
-EBNF grammar for the text representation of the IL.
-
 <file> ::= {<file-element>}*
 
 <file-element> ::= <static-declaration>
