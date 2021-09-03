@@ -69,15 +69,16 @@ impl<'source> Parser<'source> {
         list.push(Init::Base(Expr::U8(0)));
 
         // Create static variable for it
-        self.file.statics.push(Static {
-            vis: Vis::Private,
-            name: name.clone(),
-            r#type: Type::Array {
-                elem_count: list.len(),
-                elem_type: Box::from(Type::U8),
-            },
-            init: Some(Init::List(list)),
-        });
+        self.file.statics.insert(name.clone(),
+            Static {
+                vis: Vis::Private,
+                name: name.clone(),
+                r#type: Type::Array {
+                    elem_count: list.len(),
+                    elem_type: Box::from(Type::U8),
+                },
+                init: Some(Init::List(list)),
+            });
 
         name
     }
@@ -140,8 +141,9 @@ impl<'source> Parser<'source> {
                 expr
             },
             Token::Str(s) => {
+                // String literal becomes a pointer to a static
                 let r#type = self.want_type_suffix();
-                Expr::Ident(self.make_string_lit(r#type, s))
+                Expr::Ref(Box::from(Expr::Ident(self.make_string_lit(r#type, s))))
             },
             Token::Ident(s) => Expr::Ident(s),
             Token::Constant(val) => match self.want_type_suffix() {
@@ -175,7 +177,10 @@ impl<'source> Parser<'source> {
                 }
                 expr = Expr::Call(Box::from(expr), args);
             } else if maybe_want!(self, Token::LSq) {
-                expr = Expr::Elem(Box::from(expr), Box::from(self.want_expr()));
+                // NOTE: array indexing desugars into pointer arithmetic
+                expr = Expr::Deref(Box::from(
+                    Expr::Add(Box::from(expr), Box::from(self.want_expr()))));
+                want!(self, Token::RSq, "Expected ]");
             } else {
                 return expr;
             }
@@ -294,42 +299,38 @@ impl<'source> Parser<'source> {
                     elem_count: elem_count_expr.eval_usize()
                 }
             },
-            Token::Record   => {
-                let ident = self.want_ident();
-                if let Some(record) = self.file.records.get(&ident) {
-                    if record.is_union {
-                        panic!("Referencing union type with record keyword");
-                    }
-                    return Type::Record(record.clone());
+            Token::Ident(ref ident) => {
+                if let Some(record) = self.file.records.get(ident) {
+                    Type::Record(record.clone())
+                } else {
+                    panic!("Non-existent type {}", ident)
                 }
-                panic!("Non-existent record type {}", ident)
-            },
-            Token::Union    => {
-                let ident = self.want_ident();
-                if let Some(union) = self.file.records.get(&ident) {
-                    if !union.is_union {
-                        panic!("Referencing record type with union keyword");
-                    }
-                    return Type::Record(union.clone());
-                }
-                panic!("Non-existent union type {}", ident)
             },
             _ => panic!("Invalid typename!"),
         }
     }
 
     fn want_record(&mut self, is_union: bool) -> Record {
-        let mut r = Record {
-            is_union: is_union,
-            fields: HashMap::new()
-        };
+        let mut fields = HashMap::new();
+        let mut size = 0usize;
         // Read fields until }
         want!(self, Token::LCurly, "Expected left curly");
         while !maybe_want!(self, Token::RCurly) {
             let ident = self.want_ident();
             want!(self, Token::Colon, "Expected :");
             let r#type = self.want_type();
-            r.fields.insert(ident, r#type);
+            let offset;
+            let cur_size = r#type.get_size();
+            if is_union {
+                offset = 0;
+                if size < cur_size {
+                    size = cur_size;
+                }
+            } else {
+                offset = size;
+                size += cur_size;
+            }
+            fields.insert(ident, (r#type, offset));
             if !maybe_want!(self, Token::Comma) {
                 want!(self, Token::RCurly, "Expected right curly");
                 break;
@@ -337,7 +338,11 @@ impl<'source> Parser<'source> {
         }
         // Record type declaration must end in semicolon
         want!(self, Token::Semicolon, "Expected ;");
-        r
+
+        Record {
+            fields: fields,
+            size: size,
+        }
     }
 
     fn want_initializer(&mut self) -> Init {
@@ -446,7 +451,7 @@ impl<'source> Parser<'source> {
                     }
                     want!(self, Token::Semicolon, "Expected ;");
 
-                    self.file.statics.push(Static {
+                    self.file.statics.insert(ident.clone(), Static {
                         vis: vis,
                         name: ident,
                         r#type: r#type,

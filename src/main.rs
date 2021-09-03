@@ -10,9 +10,9 @@ use ast::{Type,Expr,Init,Stmt,Vis,Func,File};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-fn gen_static_init(init: &Init) {
+fn gen_static_init(file: &File, init: &Init) {
     match init {
-        Init::Base(ref expr) => match expr {
+        Init::Base(expr) => match expr {
             Expr::U8(v)  => println!("db {}", v),
             Expr::I8(v)  => println!("db {}", v),
             Expr::U16(v) => println!("dw {}", v),
@@ -21,10 +21,27 @@ fn gen_static_init(init: &Init) {
             Expr::I32(v) => println!("dd {}", v),
             Expr::U64(v) => println!("dq {}", v),
             Expr::I64(v) => println!("dq {}", v),
-            _ => panic!("FIXME: Static initializer must be a constant"),
+            // Static can be initialized by another static
+            Expr::Ident(ident) => {
+                if let Some(ref s) = file.statics.get(ident) {
+                    // FIXME: fill with zeroes if the referenced static doesn't have an initializer
+                    let ref refed_init = s.init.as_ref().unwrap();
+                    gen_static_init(file, refed_init);
+                } else {
+                    panic!("Unknown")
+                }
+            },
+            // Or by a pointer to a static (or string literal)
+            Expr::Ref(dest) => {
+                match &**dest {
+                    Expr::Ident(ident) => println!("dq {}", ident),
+                    _ => panic!("Non constant static initializer"),
+                }
+            },
+            _ => panic!("Non constant static initializer"),
         },
         Init::List(ref list) => for i in list {
-            gen_static_init(i);
+            gen_static_init(file, i);
         },
     }
 }
@@ -65,13 +82,12 @@ fn gen_expr(
             }
         },
 
-        /*Expr::Ref(ref expr) => gen_expr(expr, locals, data),
+        /*
+        Expr::Ref(ref expr) => gen_expr(expr, locals, data),
         Expr::Deref(ref expr) => gen_expr(expr, locals, data),
         Expr::Field(ref expr, _) => gen_expr(expr, locals, data),
-        Expr::Elem(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
-        },*/
+        */
+
         Expr::Call(func, ref params) => {
             for (i, param) in params.iter().enumerate() {
                 match i {
@@ -90,10 +106,16 @@ fn gen_expr(
             }
         },
 
-        /*
-        Expr::Inv(ref expr) => gen_expr(expr, locals, data),
-        Expr::Neg(ref expr) => gen_expr(expr, locals, data),
-        Expr::Add(ref expr1, ref expr2) => {
+        Expr::Inv(ref expr) => {
+            gen_expr(file, accum, expr, locals);
+            println!("not {}", accum);
+        },
+        Expr::Neg(ref expr) => {
+            gen_expr(file, accum, expr, locals);
+            println!("neg {}", accum);
+        },
+
+        /*Expr::Add(ref expr1, ref expr2) => {
             gen_expr(expr1, locals, data);
             gen_expr(expr2, locals, data);
         },
@@ -135,12 +157,14 @@ fn gen_expr(
         },
         Expr::Cast(ref expr, _) => gen_expr(expr, locals, data),
         */
+
         _ => todo!("expression {:?}", in_expr),
     }
 }
 
 fn gen_func(file: &File, func: &Func) {
     println!("{}:", func.name);
+    println!("{:#?}", func.stmts);
 
     // Generate locals
     let mut frame_size = 0usize;
@@ -223,7 +247,7 @@ fn main() {
 
     // Generate data
     println!("section .data");
-    for cur_static in &file.statics {
+    for (_, cur_static) in &file.statics {
         match cur_static.vis {
             Vis::Export => exports.push(cur_static.name.clone()),
             Vis::Extern => externs.push(cur_static.name.clone()),
@@ -234,7 +258,7 @@ fn main() {
             // Generate static initializer in .data
             Some(ref init) => {
                 println!("{}:", cur_static.name);
-                gen_static_init(init);
+                gen_static_init(&file, init);
             },
             // Take note for bss allocation later
             None => {
@@ -266,7 +290,6 @@ fn main() {
     }
 
     // Generate markers
-    println!("");
     for exp in exports {
         println!("global {}", exp);
     }

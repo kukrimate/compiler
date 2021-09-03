@@ -35,8 +35,7 @@
                      | i32
                      | u64
                      | i64
-                     | record <identifier>
-                     | union <identifier>
+                     | <identifier>
                      | * <type-declaration>
                      | [ <type-declaration> ; <expression> ]
 

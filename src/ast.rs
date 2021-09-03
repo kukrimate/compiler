@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 #[derive(Debug)]
 pub struct Record {
-    pub is_union: bool,
-    pub fields: HashMap<Rc<str>, Type>,
+    pub fields: HashMap<Rc<str>, (Type, usize)>,
+    pub size: usize,
 }
 
 #[derive(Debug)]
@@ -54,17 +54,7 @@ impl Type {
             Type::Array { elem_type, elem_count } => {
                 elem_type.get_size() * elem_count
             },
-            Type::Record(record) => {
-                let size_iter = record.fields.iter().map(
-                    |(_, t)| -> usize {
-                    t.get_size()
-                });
-                if record.is_union {
-                    size_iter.max().unwrap_or_else(|| -> usize { 0 })
-                } else {
-                    size_iter.sum()
-                }
-            }
+            Type::Record(record) => record.size,
         }
     }
 }
@@ -94,7 +84,6 @@ pub enum Expr {
     Neg(Box<Expr>),
     // Postfix expressions
     Field(Box<Expr>, Rc<str>),
-    Elem(Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     // Binary operations
     Add(Box<Expr>, Box<Expr>),
@@ -197,7 +186,7 @@ impl Func {
 #[derive(Debug)]
 pub struct File {
     pub records: HashMap<Rc<str>, Rc<Record>>,
-    pub statics: Vec<Static>,
+    pub statics: HashMap<Rc<str>, Static>,
     pub funcs: Vec<Func>,
 }
 
@@ -205,7 +194,7 @@ impl File {
     pub fn new() -> File {
         File {
             records: HashMap::new(),
-            statics: Vec::new(),
+            statics: HashMap::new(),
             funcs: Vec::new(),
         }
     }
