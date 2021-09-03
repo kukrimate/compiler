@@ -121,7 +121,6 @@ pub enum Expr {
     Const(IntVal),
     // Identifier
     Ident(Rc<str>),
-    Str(Type, Rc<str>),
     // Pointer ref/deref
     Ref(Box<Expr>),
     Deref(Box<Expr>),
@@ -223,6 +222,30 @@ pub struct Parser<'source> {
     lex: &'source mut Lexer<'source>,
     // Records/unions
     records: HashMap<Rc<str>, Rc<Record>>,
+    // Static variables
+    statics: Vec<Static>,
+    litno: usize,
+}
+
+macro_rules! want {
+    ($self:expr, $pattern:pat, $err:expr) => {
+        match $self.tmp {
+            Some($pattern) => $self.tmp = $self.lex.next(),
+            _ => panic!($err),
+        }
+    }
+}
+
+macro_rules! maybe_want {
+    ($self:expr, $pattern:pat) => {
+        match $self.tmp {
+            Some($pattern) => {
+                $self.tmp = $self.lex.next();
+                true
+            },
+            _ => false,
+        }
+    }
 }
 
 impl<'source> Parser<'source> {
@@ -231,6 +254,8 @@ impl<'source> Parser<'source> {
             tmp: lex.next(),
             lex: lex,
             records: HashMap::new(),
+            statics: Vec::new(),
+            litno: 0,
         }
     }
 
@@ -238,395 +263,401 @@ impl<'source> Parser<'source> {
         std::mem::replace(&mut self.tmp, self.lex.next()).unwrap()
     }
 
-    pub fn parse_file(&mut self) -> (Vec<Static>, Vec<Func>) {
-        macro_rules! want {
-            ($p:expr, $pattern:pat, $err:expr) => {
-                match $p.tmp {
-                    Some($pattern) => $p.tmp = $p.lex.next(),
-                    _ => panic!($err),
-                }
-            }
+    // FIXME: take string literal type into account
+    fn make_string_lit(&mut self, _: Type, data: Rc<str>) -> Rc<str> {
+        // Create globally unique name for the literal
+        let name: Rc<str> = Rc::from(format!("_slit_{}", self.litno));
+        self.litno += 1;
+
+        // Create NUL-terminated initializer for the string
+        let mut list = Vec::new();
+        for b in data.as_bytes() {
+            list.push(Init::Base(Expr::Const(IntVal::U8(*b))));
         }
+        list.push(Init::Base(Expr::Const(IntVal::U8(0))));
 
-        macro_rules! maybe_want {
-            ($p:expr, $pattern:pat) => {
-                match $p.tmp {
-                    Some($pattern) => {
-                        $p.tmp = $p.lex.next();
-                        true
-                    },
-                    _ => false,
-                }
-            }
-        }
+        // Create static variable for it
+        self.statics.push(Static {
+            vis: Vis::Private,
+            name: name.clone(),
+            r#type: Type::Array {
+                elem_count: list.len(),
+                elem_type: Box::from(Type::U8),
+            },
+            init: Some(Init::List(list)),
+        });
 
-        fn want_ident(p: &mut Parser) -> Rc<str> {
-            match &p.tmp {
-                Some(Token::Ident(_)) => {
-                    if let Token::Ident(s) = p.next_token() {
-                        s
-                    } else {
-                        unreachable!()
-                    }
-                },
-                tok @ _ => panic!("Expected identifier, got {:?}!", tok),
-            }
-        }
+        name
+    }
 
-        fn want_label(p: &mut Parser) -> Rc<str> {
-            match &p.tmp {
-                Some(Token::Label(_)) => {
-                    if let Token::Label(s) = p.next_token() {
-                        s
-                    } else {
-                        unreachable!()
-                    }
-                },
-                tok @ _ => panic!("Expected label, got {:?}!", tok),
-            }
-        }
-
-        fn maybe_want_vis(p: &mut Parser) -> Vis {
-            if maybe_want!(p, Token::Export) {
-                Vis::Export
-            } else if maybe_want!(p, Token::Extern) {
-                Vis::Extern
-            } else {
-                Vis::Private
-            }
-        }
-
-        fn want_type_suffix(p: &mut Parser) -> Type {
-            match p.next_token() {
-                Token::U8   => Type::U8,
-                Token::I8   => Type::I8,
-                Token::U16  => Type::U16,
-                Token::I16  => Type::I16,
-                Token::U32  => Type::U32,
-                Token::I32  => Type::I32,
-                Token::U64  => Type::U32,
-                Token::I64  => Type::I64,
-                _ => panic!("Invalid type suffix!"),
-            }
-        }
-
-        fn want_primary(p: &mut Parser) -> Expr {
-            match p.next_token() {
-                Token::LParen => {
-                    let expr = want_expr(p);
-                    want!(p, Token::RParen, "Missing )");
-                    expr
-                },
-                Token::Str(s) => Expr::Str(want_type_suffix(p), s),
-                Token::Ident(s) => Expr::Ident(s),
-                Token::Constant(val) => match want_type_suffix(p) {
-                    Type::U8    => Expr::Const(IntVal::U8(val as u8)),
-                    Type::I8    => Expr::Const(IntVal::I8(val as i8)),
-                    Type::U16   => Expr::Const(IntVal::U16(val as u16)),
-                    Type::I16   => Expr::Const(IntVal::I16(val as i16)),
-                    Type::U32   => Expr::Const(IntVal::U32(val as u32)),
-                    Type::I32   => Expr::Const(IntVal::I32(val as i32)),
-                    Type::U64   => Expr::Const(IntVal::U64(val as u64)),
-                    Type::I64   => Expr::Const(IntVal::I64(val as i64)),
-                    _ => unreachable!(),
-                },
-                _ => panic!("Invalid constant value!"),
-            }
-        }
-
-        fn want_postfix(p: &mut Parser) -> Expr {
-            let mut expr = want_primary(p);
-
-            loop {
-                if maybe_want!(p, Token::Dot) {
-                    expr = Expr::Field(Box::from(expr), want_ident(p));
-                } else if maybe_want!(p, Token::LParen) {
-                    let mut args = Vec::new();
-                    while !maybe_want!(p, Token::RParen) {
-                        args.push(want_expr(p));
-                        if !maybe_want!(p, Token::Comma) {
-                            want!(p, Token::RParen, "Expected )");
-                            break;
-                        }
-                    }
-                    expr = Expr::Call(Box::from(expr), args);
-                } else if maybe_want!(p, Token::LSq) {
-                    expr = Expr::Elem(Box::from(expr), Box::from(want_expr(p)));
+    fn want_ident(&mut self) -> Rc<str> {
+        match &self.tmp {
+            Some(Token::Ident(_)) => {
+                if let Token::Ident(s) = self.next_token() {
+                    s
                 } else {
-                    return expr;
+                    unreachable!()
                 }
-            }
+            },
+            tok @ _ => panic!("Expected identifier, got {:?}!", tok),
         }
+    }
 
-        fn want_unary(p: &mut Parser) -> Expr {
-            if maybe_want!(p, Token::Sub) {
-                Expr::Neg(Box::from(want_unary(p)))
-            } else if maybe_want!(p, Token::Tilde) {
-                Expr::Inv(Box::from(want_unary(p)))
-            } else if maybe_want!(p, Token::Mul) {
-                Expr::Deref(Box::from(want_unary(p)))
-            } else if maybe_want!(p, Token::And) {
-                Expr::Ref(Box::from(want_unary(p)))
-            } else if maybe_want!(p, Token::Add) {
-                want_unary(p)
-            } else {
-                want_postfix(p)
-            }
-        }
-
-        fn want_cast(p: &mut Parser) -> Expr {
-            let expr1 = want_unary(p);
-            if maybe_want!(p, Token::Cast) {
-                Expr::Cast(Box::from(expr1), want_type(p))
-            } else {
-                expr1
-            }
-        }
-
-        fn want_mul(p: &mut Parser) -> Expr {
-            let expr1 = want_cast(p);
-            if maybe_want!(p, Token::Mul) {
-                Expr::Mul(Box::from(expr1), Box::from(want_mul(p)))
-            } else if maybe_want!(p, Token::Div) {
-                Expr::Div(Box::from(expr1), Box::from(want_mul(p)))
-            } else if maybe_want!(p, Token::Rem) {
-                Expr::Rem(Box::from(expr1), Box::from(want_mul(p)))
-            } else {
-                expr1
-            }
-        }
-
-        fn want_add(p: &mut Parser) -> Expr {
-            let expr1 = want_mul(p);
-            if maybe_want!(p, Token::Add) {
-                Expr::Add(Box::from(expr1), Box::from(want_add(p)))
-            } else if maybe_want!(p, Token::Sub) {
-                Expr::Sub(Box::from(expr1), Box::from(want_add(p)))
-            } else {
-                expr1
-            }
-        }
-
-        fn want_shift(p: &mut Parser) -> Expr {
-            let expr1 = want_add(p);
-            if maybe_want!(p, Token::Lsh) {
-                Expr::Lsh(Box::from(expr1), Box::from(want_shift(p)))
-            } else if maybe_want!(p, Token::Rsh) {
-                Expr::Rsh(Box::from(expr1), Box::from(want_shift(p)))
-            } else {
-                expr1
-            }
-        }
-
-        fn want_and(p: &mut Parser) -> Expr {
-            let expr1 = want_shift(p);
-            if maybe_want!(p, Token::And) {
-                Expr::And(Box::from(expr1), Box::from(want_and(p)))
-            } else {
-                expr1
-            }
-        }
-
-        fn want_xor(p: &mut Parser) -> Expr {
-            let expr1 = want_and(p);
-            if maybe_want!(p, Token::Xor) {
-                Expr::Xor(Box::from(expr1), Box::from(want_xor(p)))
-            } else {
-                expr1
-            }
-        }
-
-        fn want_or(p: &mut Parser) -> Expr {
-            let expr1 = want_xor(p);
-            if maybe_want!(p, Token::Or) {
-                Expr::Or(Box::from(expr1), Box::from(want_or(p)))
-            } else {
-                expr1
-            }
-        }
-
-        fn want_expr(p: &mut Parser) -> Expr {
-            want_or(p)
-        }
-
-        fn want_type(p: &mut Parser) -> Type {
-            match p.next_token() {
-                Token::U8   => Type::U8,
-                Token::I8   => Type::I8,
-                Token::U16  => Type::U16,
-                Token::I16  => Type::I16,
-                Token::U32  => Type::U32,
-                Token::I32  => Type::I32,
-                Token::U64  => Type::U64,
-                Token::I64  => Type::I64,
-                Token::Mul  => Type::Ptr { base_type: Box::new(want_type(p)) },
-                Token::LSq  => {
-                    let elem_type = Box::new(want_type(p));
-                    want!(p, Token::Semicolon, "Expected ;");
-                    let elem_count_expr = want_expr(p);
-                    want!(p, Token::RSq, "Expected ]");
-                    let elem_count = match elem_count_expr {
-                        Expr::Const(intval) => intval.as_usize(),
-                        _ => panic!("Array size must be a constant!"),
-                    };
-                    Type::Array { elem_type: elem_type, elem_count: elem_count }
-                },
-                Token::Record   => {
-                    let ident = want_ident(p);
-                    if let Some(record) = p.records.get(&ident) {
-                        if record.is_union {
-                            panic!("Referencing union type with record keyword");
-                        }
-                        return Type::Record(record.clone());
-                    }
-                    panic!("Non-existent record type {}", ident)
-                },
-                Token::Union    => {
-                    let ident = want_ident(p);
-                    if let Some(union) = p.records.get(&ident) {
-                        if !union.is_union {
-                            panic!("Referencing record type with union keyword");
-                        }
-                        return Type::Record(union.clone());
-                    }
-                    panic!("Non-existent union type {}", ident)
-                },
-                _ => panic!("Invalid typename!"),
-            }
-        }
-
-        fn want_record(p: &mut Parser, is_union: bool) -> Record {
-            let mut r = Record {
-                is_union: is_union,
-                fields: HashMap::new()
-            };
-            // Read fields until }
-            want!(p, Token::LCurly, "Expected left curly");
-            while !maybe_want!(p, Token::RCurly) {
-                let ident = want_ident(p);
-                want!(p, Token::Colon, "Expected :");
-                let r#type = want_type(p);
-                r.fields.insert(ident, r#type);
-                if !maybe_want!(p, Token::Comma) {
-                    want!(p, Token::RCurly, "Expected right curly");
-                    break;
+    fn want_label(&mut self) -> Rc<str> {
+        match &self.tmp {
+            Some(Token::Label(_)) => {
+                if let Token::Label(s) = self.next_token() {
+                    s
+                } else {
+                    unreachable!()
                 }
-            }
-            // Record type declaration must end in semicolon
-            want!(p, Token::Semicolon, "Expected ;");
-            r
+            },
+            tok @ _ => panic!("Expected label, got {:?}!", tok),
         }
+    }
 
-        fn want_initializer(p: &mut Parser) -> Init {
-            if maybe_want!(p, Token::LCurly) {
-                let mut list = Vec::new();
-                while !maybe_want!(p, Token::RCurly) {
-                    list.push(want_initializer(p));
-                    if !maybe_want!(p, Token::Comma) {
-                        want!(p, Token::RCurly, "Expected right curly");
+    fn maybe_want_vis(&mut self) -> Vis {
+        if maybe_want!(self, Token::Export) {
+            Vis::Export
+        } else if maybe_want!(self, Token::Extern) {
+            Vis::Extern
+        } else {
+            Vis::Private
+        }
+    }
+
+    fn want_type_suffix(&mut self) -> Type {
+        match self.next_token() {
+            Token::U8   => Type::U8,
+            Token::I8   => Type::I8,
+            Token::U16  => Type::U16,
+            Token::I16  => Type::I16,
+            Token::U32  => Type::U32,
+            Token::I32  => Type::I32,
+            Token::U64  => Type::U32,
+            Token::I64  => Type::I64,
+            _ => panic!("Invalid type suffix!"),
+        }
+    }
+
+    fn want_primary(&mut self) -> Expr {
+        match self.next_token() {
+            Token::LParen => {
+                let expr = self.want_expr();
+                want!(self, Token::RParen, "Missing )");
+                expr
+            },
+            Token::Str(s) => {
+                let r#type = self.want_type_suffix();
+                Expr::Ident(self.make_string_lit(r#type, s))
+            },
+            Token::Ident(s) => Expr::Ident(s),
+            Token::Constant(val) => match self.want_type_suffix() {
+                Type::U8    => Expr::Const(IntVal::U8(val as u8)),
+                Type::I8    => Expr::Const(IntVal::I8(val as i8)),
+                Type::U16   => Expr::Const(IntVal::U16(val as u16)),
+                Type::I16   => Expr::Const(IntVal::I16(val as i16)),
+                Type::U32   => Expr::Const(IntVal::U32(val as u32)),
+                Type::I32   => Expr::Const(IntVal::I32(val as i32)),
+                Type::U64   => Expr::Const(IntVal::U64(val as u64)),
+                Type::I64   => Expr::Const(IntVal::I64(val as i64)),
+                _ => unreachable!(),
+            },
+            _ => panic!("Invalid constant value!"),
+        }
+    }
+
+    fn want_postfix(&mut self) -> Expr {
+        let mut expr = self.want_primary();
+        loop {
+            if maybe_want!(self, Token::Dot) {
+                expr = Expr::Field(Box::from(expr), self.want_ident());
+            } else if maybe_want!(self, Token::LParen) {
+                let mut args = Vec::new();
+                while !maybe_want!(self, Token::RParen) {
+                    args.push(self.want_expr());
+                    if !maybe_want!(self, Token::Comma) {
+                        want!(self, Token::RParen, "Expected )");
                         break;
                     }
                 }
-                Init::List(list)
+                expr = Expr::Call(Box::from(expr), args);
+            } else if maybe_want!(self, Token::LSq) {
+                expr = Expr::Elem(Box::from(expr), Box::from(self.want_expr()));
             } else {
-                Init::Base(want_expr(p))
+                return expr;
             }
         }
+    }
 
-        fn want_stmt(p: &mut Parser) -> Stmt {
-            let stmt = match std::mem::replace(
-                    &mut p.tmp, p.lex.next()).unwrap() {
-                Token::Eval     => Stmt::Eval(want_expr(p)),
-                Token::Ret      => Stmt::Ret(want_expr(p)),
-                Token::Auto     => {
-                    let ident = want_ident(p);
-                    want!(p, Token::Colon, "Expected :");
-                    let r#type = want_type(p);
-                    let mut init = None;
-                    if maybe_want!(p, Token::Eq) {
-                        init = Some(want_initializer(p));
+    fn want_unary(&mut self) -> Expr {
+        if maybe_want!(self, Token::Sub) {
+            Expr::Neg(Box::from(self.want_unary()))
+        } else if maybe_want!(self, Token::Tilde) {
+            Expr::Inv(Box::from(self.want_unary()))
+        } else if maybe_want!(self, Token::Mul) {
+            Expr::Deref(Box::from(self.want_unary()))
+        } else if maybe_want!(self, Token::And) {
+            Expr::Ref(Box::from(self.want_unary()))
+        } else if maybe_want!(self, Token::Add) {
+            self.want_unary()
+        } else {
+            self.want_postfix()
+        }
+    }
+
+    fn want_cast(&mut self) -> Expr {
+        let expr1 = self.want_unary();
+        if maybe_want!(self, Token::Cast) {
+            Expr::Cast(Box::from(expr1), self.want_type())
+        } else {
+            expr1
+        }
+    }
+
+    fn want_mul(&mut self) -> Expr {
+        let expr1 = self.want_cast();
+        if maybe_want!(self, Token::Mul) {
+            Expr::Mul(Box::from(expr1), Box::from(self.want_mul()))
+        } else if maybe_want!(self, Token::Div) {
+            Expr::Div(Box::from(expr1), Box::from(self.want_mul()))
+        } else if maybe_want!(self, Token::Rem) {
+            Expr::Rem(Box::from(expr1), Box::from(self.want_mul()))
+        } else {
+            expr1
+        }
+    }
+
+    fn want_add(&mut self) -> Expr {
+        let expr1 = self.want_mul();
+        if maybe_want!(self, Token::Add) {
+            Expr::Add(Box::from(expr1), Box::from(self.want_add()))
+        } else if maybe_want!(self, Token::Sub) {
+            Expr::Sub(Box::from(expr1), Box::from(self.want_add()))
+        } else {
+            expr1
+        }
+    }
+
+    fn want_shift(&mut self) -> Expr {
+        let expr1 = self.want_add();
+        if maybe_want!(self, Token::Lsh) {
+            Expr::Lsh(Box::from(expr1), Box::from(self.want_shift()))
+        } else if maybe_want!(self, Token::Rsh) {
+            Expr::Rsh(Box::from(expr1), Box::from(self.want_shift()))
+        } else {
+            expr1
+        }
+    }
+
+    fn want_and(&mut self) -> Expr {
+        let expr1 = self.want_shift();
+        if maybe_want!(self, Token::And) {
+            Expr::And(Box::from(expr1), Box::from(self.want_and()))
+        } else {
+            expr1
+        }
+    }
+
+    fn want_xor(&mut self) -> Expr {
+        let expr1 = self.want_and();
+        if maybe_want!(self, Token::Xor) {
+            Expr::Xor(Box::from(expr1), Box::from(self.want_xor()))
+        } else {
+            expr1
+        }
+    }
+
+    fn want_or(&mut self) -> Expr {
+        let expr1 = self.want_xor();
+        if maybe_want!(self, Token::Or) {
+            Expr::Or(Box::from(expr1), Box::from(self.want_or()))
+        } else {
+            expr1
+        }
+    }
+
+    fn want_expr(&mut self) -> Expr {
+        self.want_or()
+    }
+
+    fn want_type(&mut self) -> Type {
+        match self.next_token() {
+            Token::U8   => Type::U8,
+            Token::I8   => Type::I8,
+            Token::U16  => Type::U16,
+            Token::I16  => Type::I16,
+            Token::U32  => Type::U32,
+            Token::I32  => Type::I32,
+            Token::U64  => Type::U64,
+            Token::I64  => Type::I64,
+            Token::Mul  => Type::Ptr { base_type: Box::new(self.want_type()) },
+            Token::LSq  => {
+                let elem_type = Box::new(self.want_type());
+                want!(self, Token::Semicolon, "Expected ;");
+                let elem_count_expr = self.want_expr();
+                want!(self, Token::RSq, "Expected ]");
+                let elem_count = match elem_count_expr {
+                    Expr::Const(intval) => intval.as_usize(),
+                    _ => panic!("Array size must be a constant!"),
+                };
+                Type::Array { elem_type: elem_type, elem_count: elem_count }
+            },
+            Token::Record   => {
+                let ident = self.want_ident();
+                if let Some(record) = self.records.get(&ident) {
+                    if record.is_union {
+                        panic!("Referencing union type with record keyword");
                     }
-                    Stmt::Auto(ident, r#type, init)
-                },
-                Token::Label(s) => Stmt::Label(s),
-                Token::Set      => {
-                    let var = want_expr(p);
-                    want!(p, Token::Eq, "Expected =");
-                    Stmt::Set(var, want_expr(p))
-                },
-                Token::Jmp      => Stmt::Jmp(want_label(p)),
-                Token::Jeq      => {
-                    let label = want_label(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    let expr1 = want_expr(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    Stmt::Jeq(label, expr1, want_expr(p))
-                },
-                Token::Jl       => {
-                    let label = want_label(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    let expr1 = want_expr(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    Stmt::Jl(label, expr1, want_expr(p))
-                },
-                Token::Jle      => {
-                    let label = want_label(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    let expr1 = want_expr(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    Stmt::Jle(label, expr1, want_expr(p))
-                },
-                Token::Jg       => {
-                    let label = want_label(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    let expr1 = want_expr(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    Stmt::Jg(label, expr1, want_expr(p))
-                },
-                Token::Jge      => {
-                    let label = want_label(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    let expr1 = want_expr(p);
-                    want!(p, Token::Comma, "Expected ,");
-                    Stmt::Jge(label, expr1, want_expr(p))
-                },
-                tok @ _ => panic!("Invalid statement: {:?}", tok),
-            };
-            if let Stmt::Label(_) = stmt {
-                want!(p, Token::Colon, "Expected :");
-            } else {
-                want!(p, Token::Semicolon, "Expected ;");
-            }
-            stmt
+                    return Type::Record(record.clone());
+                }
+                panic!("Non-existent record type {}", ident)
+            },
+            Token::Union    => {
+                let ident = self.want_ident();
+                if let Some(union) = self.records.get(&ident) {
+                    if !union.is_union {
+                        panic!("Referencing record type with union keyword");
+                    }
+                    return Type::Record(union.clone());
+                }
+                panic!("Non-existent union type {}", ident)
+            },
+            _ => panic!("Invalid typename!"),
         }
+    }
 
-        let mut statics = Vec::new();
+    fn want_record(&mut self, is_union: bool) -> Record {
+        let mut r = Record {
+            is_union: is_union,
+            fields: HashMap::new()
+        };
+        // Read fields until }
+        want!(self, Token::LCurly, "Expected left curly");
+        while !maybe_want!(self, Token::RCurly) {
+            let ident = self.want_ident();
+            want!(self, Token::Colon, "Expected :");
+            let r#type = self.want_type();
+            r.fields.insert(ident, r#type);
+            if !maybe_want!(self, Token::Comma) {
+                want!(self, Token::RCurly, "Expected right curly");
+                break;
+            }
+        }
+        // Record type declaration must end in semicolon
+        want!(self, Token::Semicolon, "Expected ;");
+        r
+    }
+
+    fn want_initializer(&mut self) -> Init {
+        if maybe_want!(self, Token::LCurly) {
+            let mut list = Vec::new();
+            while !maybe_want!(self, Token::RCurly) {
+                list.push(self.want_initializer());
+                if !maybe_want!(self, Token::Comma) {
+                    want!(self, Token::RCurly, "Expected right curly");
+                    break;
+                }
+            }
+            Init::List(list)
+        } else {
+            Init::Base(self.want_expr())
+        }
+    }
+
+    fn want_stmt(&mut self) -> Stmt {
+        let stmt = match self.next_token() {
+            Token::Eval     => Stmt::Eval(self.want_expr()),
+            Token::Ret      => Stmt::Ret(self.want_expr()),
+            Token::Auto     => {
+                let ident = self.want_ident();
+                want!(self, Token::Colon, "Expected :");
+                let r#type = self.want_type();
+                let mut init = None;
+                if maybe_want!(self, Token::Eq) {
+                    init = Some(self.want_initializer());
+                }
+                Stmt::Auto(ident, r#type, init)
+            },
+            Token::Label(s) => Stmt::Label(s),
+            Token::Set      => {
+                let var = self.want_expr();
+                want!(self, Token::Eq, "Expected =");
+                Stmt::Set(var, self.want_expr())
+            },
+            Token::Jmp      => Stmt::Jmp(self.want_label()),
+            Token::Jeq      => {
+                let label = self.want_label();
+                want!(self, Token::Comma, "Expected ,");
+                let expr1 = self.want_expr();
+                want!(self, Token::Comma, "Expected ,");
+                Stmt::Jeq(label, expr1, self.want_expr())
+            },
+            Token::Jl       => {
+                let label = self.want_label();
+                want!(self, Token::Comma, "Expected ,");
+                let expr1 = self.want_expr();
+                want!(self, Token::Comma, "Expected ,");
+                Stmt::Jl(label, expr1, self.want_expr())
+            },
+            Token::Jle      => {
+                let label = self.want_label();
+                want!(self, Token::Comma, "Expected ,");
+                let expr1 = self.want_expr();
+                want!(self, Token::Comma, "Expected ,");
+                Stmt::Jle(label, expr1, self.want_expr())
+            },
+            Token::Jg       => {
+                let label = self.want_label();
+                want!(self, Token::Comma, "Expected ,");
+                let expr1 = self.want_expr();
+                want!(self, Token::Comma, "Expected ,");
+                Stmt::Jg(label, expr1, self.want_expr())
+            },
+            Token::Jge      => {
+                let label = self.want_label();
+                want!(self, Token::Comma, "Expected ,");
+                let expr1 = self.want_expr();
+                want!(self, Token::Comma, "Expected ,");
+                Stmt::Jge(label, expr1, self.want_expr())
+            },
+            tok @ _ => panic!("Invalid statement: {:?}", tok),
+        };
+        if let Stmt::Label(_) = stmt {
+            want!(self, Token::Colon, "Expected :");
+        } else {
+            want!(self, Token::Semicolon, "Expected ;");
+        }
+        stmt
+    }
+
+    pub fn parse_file(&mut self) -> (Vec<Static>, Vec<Func>) {
         let mut funcs = Vec::new();
 
         while !self.tmp.is_none() {
             match self.next_token() {
                 Token::Record => {
-                    let ident = want_ident(self);
-                    let record = want_record(self, false);
+                    let ident = self.want_ident();
+                    let record = self.want_record(false);
                     self.records.insert(ident, Rc::from(record));
                 },
                 Token::Union => {
-                    let ident = want_ident(self);
-                    let union = want_record(self, true);
+                    let ident = self.want_ident();
+                    let union = self.want_record(true);
                     self.records.insert(ident, Rc::from(union));
                 },
                 Token::Static => {
-                    let vis = maybe_want_vis(self);
-                    let ident = want_ident(self);
+                    let vis = self.maybe_want_vis();
+                    let ident = self.want_ident();
                     want!(self, Token::Colon, "Expected :");
-                    let r#type = want_type(self);
+                    let r#type = self.want_type();
                     let mut init = None;
                     if maybe_want!(self, Token::Eq) {
-                        init = Some(want_initializer(self));
+                        init = Some(self.want_initializer());
                     }
                     want!(self, Token::Semicolon, "Expected ;");
 
-                    statics.push(Static {
+                    self.statics.push(Static {
                         vis: vis,
                         name: ident,
                         r#type: r#type,
@@ -634,15 +665,15 @@ impl<'source> Parser<'source> {
                     });
                 },
                 Token::Fn => {
-                    let vis = maybe_want_vis(self);
-                    let mut func = Func::new(vis, want_ident(self));
+                    let vis = self.maybe_want_vis();
+                    let mut func = Func::new(vis, self.want_ident());
 
                     // Read parameters
                     want!(self, Token::LParen, "Expected (");
                     while !maybe_want!(self, Token::RParen) {
-                        let ident = want_ident(self);
+                        let ident = self.want_ident();
                         want!(self, Token::Colon, "Expected :");
-                        let r#type = want_type(self);
+                        let r#type = self.want_type();
                         func.params.push((ident, r#type));
                         if !maybe_want!(self, Token::Comma) {
                             want!(self, Token::RParen, "Expected )");
@@ -652,14 +683,14 @@ impl<'source> Parser<'source> {
 
                     // Read return type (if any)
                     if maybe_want!(self, Token::Arrow) {
-                        func.rettype = Some(want_type(self));
+                        func.rettype = Some(self.want_type());
                     }
 
                     // Read body (if present)
                     if !maybe_want!(self, Token::Semicolon) {
                         want!(self, Token::LCurly, "Expected left curly");
                         while !maybe_want!(self, Token::RCurly) {
-                            func.stmts.push(want_stmt(self));
+                            func.stmts.push(self.want_stmt());
                         }
                     }
 
@@ -669,6 +700,6 @@ impl<'source> Parser<'source> {
             }
         }
 
-        (statics, funcs)
+        (std::mem::replace(&mut self.statics, Vec::new()), funcs)
     }
 }
