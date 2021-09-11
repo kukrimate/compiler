@@ -72,7 +72,7 @@ fn symtab_put(s: &str) -> Rc<str> {
 
 fn str(lex: &mut Lexer) -> Rc<str> {
     // FIXME: parse escape sequences
-    let s = lex.slice();
+    let s = String::from(lex.slice()).replace(r"\n", "\n");
     symtab_put(&s[1..s.len() - 1])
 }
 

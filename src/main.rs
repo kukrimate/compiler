@@ -67,25 +67,27 @@ enum Val {
 }
 
 // Load a reference to a value into the accumulator
-fn ref_to_accum(accum: &str, val: &Val) {
+// Aka for making a pointer to a value
+fn ref_to_accum(frame_size: usize, accum: &str, val: &Val) {
     match val {
         Val::Accum => panic!("Rvalue used as lvalue"),
-        Val::AccumRef => panic!("Rvalue used as lvalue"),
-        Val::Stack(offset) => println!("lea {}, [rsp + {}]", accum, offset),
+        Val::AccumRef => (), // Already have the address (only ends up here when derefing a pointer we just ref'd)
+        Val::Stack(offset) => println!("lea {}, [rbp - {}]", accum, frame_size - offset),
         Val::Static(ident, offset) => println!("lea {}, [{} + {}]", accum, ident, offset),
     }
 }
 
 // Load a value into the accumulator
-fn val_to_accum(accum: &str, val: &Val) {
+fn val_to_accum(frame_size: usize, accum: &str, val: &Val) {
     match val {
-        Val::Accum => (),
-        Val::AccumRef => println!("mov {}, [{}]", accum, accum),
-        Val::Stack(offset) => println!("mov {}, [rsp + {}]", accum, offset),
-        Val::Static(ident, offset) => println!("mov {}, [{} + {}]", accum, ident, offset),
+        Val::Accum => (), // Already have the value
+        Val::AccumRef => println!("mov {}, [{}]", accum, accum), // Load value from pointer
+        Val::Stack(offset) => println!("mov {}, [rbp - {}]", accum, frame_size - offset), // Load value from stack
+        Val::Static(ident, offset) => println!("mov {}, [{} + {}]", accum, ident, offset), // Load value from static
     }
 }
 
+// Make a new value that refers to an offset from a previous value
 fn field_val(accum: &str, val: &Val, field_offs: usize) -> Val {
     match val {
         Val::Accum => panic!("Rvalue used as lvalue"),
@@ -99,6 +101,7 @@ fn gen_expr(
         file: &File,
         accum: &str,
         in_expr: &Expr,
+        frame_size: usize,
         locals: &HashMap<Rc<str>, (&Type, usize)>) -> (Type, Val) {
 
     match in_expr {
@@ -122,18 +125,18 @@ fn gen_expr(
         },
 
         Expr::Ref(ref expr) => {
-            let (src_type, src_val) = gen_expr(file, accum, expr, locals);
-            ref_to_accum(accum, &src_val);
+            let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals);
+            ref_to_accum(frame_size, accum, &src_val);
             (Type::Ptr { base_type: Box::from(src_type.clone()) }, Val::Accum)
         },
 
         Expr::Deref(ref expr) => {
-            let (src_type, src_val) = gen_expr(file, accum, expr, locals);
+            let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals);
             match src_type {
                 // Read the pointer's value into the accumulator, than change
                 // the value type to to reflect this state
                 Type::Ptr { base_type } => {
-                    val_to_accum(accum, &src_val);
+                    val_to_accum(frame_size, accum, &src_val);
                     ((*base_type).clone(), Val::AccumRef)
                 },
                 // In case of an array we just change the type
@@ -143,7 +146,7 @@ fn gen_expr(
         }
 
         Expr::Field(ref expr, ident) => {
-            let (src_type, src_val) = gen_expr(file, accum, expr, locals);
+            let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals);
             match src_type {
                 Type::Record(record) => {
                     if let Some((field_type, field_offset)) = record.fields.get(ident) {
@@ -170,39 +173,57 @@ fn gen_expr(
             };
             for (i, param) in params.iter().enumerate() {
                 match i {
-                    0 => { let (_, val) = gen_expr(file, "rdi", param, locals); val_to_accum("rdi", &val) },
-                    1 => { let (_, val) = gen_expr(file, "rsi", param, locals); val_to_accum("rsi", &val) },
-                    2 => { let (_, val) = gen_expr(file, "rdx", param, locals); val_to_accum("rdx", &val) },
-                    3 => { let (_, val) = gen_expr(file, "rcx", param, locals); val_to_accum("rcx", &val) },
-                    4 => { let (_, val) = gen_expr(file, "r8", param, locals); val_to_accum("r8", &val) },
-                    5 => { let (_, val) = gen_expr(file, "r9", param, locals); val_to_accum("r9", &val) },
+                    0 => { let (_, val) = gen_expr(file, "rdi", param, frame_size, locals); val_to_accum(frame_size, "rdi", &val) },
+                    1 => { let (_, val) = gen_expr(file, "rsi", param, frame_size, locals); val_to_accum(frame_size, "rsi", &val) },
+                    2 => { let (_, val) = gen_expr(file, "rdx", param, frame_size, locals); val_to_accum(frame_size, "rdx", &val) },
+                    3 => { let (_, val) = gen_expr(file, "rcx", param, frame_size, locals); val_to_accum(frame_size, "rcx", &val) },
+                    4 => { let (_, val) = gen_expr(file, "r8", param, frame_size, locals); val_to_accum(frame_size, "r8", &val) },
+                    5 => { let (_, val) = gen_expr(file, "r9", param, frame_size, locals); val_to_accum(frame_size, "r9", &val) },
                     _ => panic!("FIXME: too many call params"),
                 };
             }
+            println!("xor rax, rax");
             println!("call {}", ident);
             (rettype, Val::Accum)
         },
 
         Expr::Inv(ref expr) => {
-            let (src_type, src_val) = gen_expr(file, accum, expr, locals);
+            let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals);
             assert_integral(&src_type);
-            val_to_accum(accum, &src_val);
+            val_to_accum(frame_size, accum, &src_val);
             println!("not {}", accum);
             (src_type, Val::Accum)
         },
+
         Expr::Neg(ref expr) => {
-            let (src_type, src_val) = gen_expr(file, accum, expr, locals);
+            let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals);
             assert_integral(&src_type);
-            val_to_accum(accum, &src_val);
+            val_to_accum(frame_size, accum, &src_val);
             println!("neg {}", accum);
             (src_type, Val::Accum)
         },
 
-        /*Expr::Add(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+        Expr::Add(ref lhs, ref rhs) => {
+            // Evaluate LHS first
+            let (lhs_type, lhs_val) = gen_expr(file, accum, lhs, frame_size, locals);
+            assert_integral(&lhs_type);
+            val_to_accum(frame_size, accum, &lhs_val);
+            // Save LHS value to stack (twice for alingment)
+            println!("push {}", accum);
+            println!("push {}", accum);
+
+            // Now we can eval the RHS
+            let (rhs_type, rhs_val) = gen_expr(file, accum, rhs, frame_size, locals);
+            assert_integral(&rhs_type);
+            val_to_accum(frame_size, accum, &rhs_val);
+
+            // Add RHS to LHS
+            println!("add {}, [rsp]", accum);
+            println!("add rsp, 16");
+            (lhs_type, Val::Accum)
         },
-        Expr::Sub(ref expr1, ref expr2) => {
+
+        /*Expr::Sub(ref expr1, ref expr2) => {
             gen_expr(expr1, locals, data);
             gen_expr(expr2, locals, data);
         },
@@ -247,9 +268,18 @@ fn gen_expr(
     }
 }
 
+fn store_accum_to_val(accum: &str, val: &Val) {
+    match val {
+        Val::Accum => panic!("Write to rvalue"),
+        Val::AccumRef => println!("mov [r10], {}", accum), // NOTE: Awful hack r10 is the dest's accum
+        Val::Stack(offset) => println!("mov [rsp + {}], {}", offset, accum),
+        Val::Static(ident, offset) => println!("mov [{} + {}], {}", ident, offset, accum),
+    }
+}
+
 fn gen_func(file: &File, func: &Func) {
     println!("{}:", func.name);
-    println!("{:#?}", func.stmts);
+    // println!("{:#?}", func.stmts);
 
     // Generate locals
     let mut frame_size = 0usize;
@@ -290,21 +320,30 @@ fn gen_func(file: &File, func: &Func) {
     // Move parameters from registers to stack
     for param in params {
         match param {
-            (0, offset) => println!("mov qword [rsp + {}], rdi", offset),
-            (1, offset) => println!("mov qword [rsp + {}], rsi", offset),
-            (2, offset) => println!("mov qword [rsp + {}], rdx", offset),
-            (3, offset) => println!("mov qword [rsp + {}], rcx", offset),
-            (4, offset) => println!("mov qword [rsp + {}], r8", offset),
-            (5, offset) => println!("mov qword [rsp + {}], r9", offset),
+            (0, offset) => println!("mov qword [rbp - {}], rdi", frame_size - offset),
+            (1, offset) => println!("mov qword [rbp - {}], rsi", frame_size - offset),
+            (2, offset) => println!("mov qword [rbp - {}], rdx", frame_size - offset),
+            (3, offset) => println!("mov qword [rbp - {}], rcx", frame_size - offset),
+            (4, offset) => println!("mov qword [rbp - {}], r8", frame_size - offset),
+            (5, offset) => println!("mov qword [rbp - {}], r9", frame_size - offset),
             _ => panic!("FIXME: more than six parameters!"),
         }
     }
 
     for stmt in &func.stmts {
         match stmt {
+            Stmt::Label(label) => println!(".{}:", label),
+            Stmt::Auto(ident, dtype, init) => {},
+            Stmt::Set(ref dest, ref expr) => {
+                let (ltype, lval) = gen_expr(file, "r10", dest, frame_size, &locals);
+                let (rtype, rval) = gen_expr(file, "rax", expr, frame_size, &locals);
+                val_to_accum(frame_size, "rax", &rval);
+                store_accum_to_val("rax", &lval);
+            }
             Stmt::Eval(ref expr) => {
-                gen_expr(file, "rax", expr, &locals);
+                gen_expr(file, "rax", expr, frame_size, &locals);
             },
+            Stmt::Jmp(label) => println!("jmp .{}", label),
             Stmt::Ret(_) => println!("jmp done"),
             _ => todo!("statement {:?}", stmt),
         }
