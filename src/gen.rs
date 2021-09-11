@@ -7,6 +7,8 @@
 use super::ast::{Type,Expr,Init,Stmt,Vis,Func,File};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::process::Command;
+use tempfile::tempdir;
 
 macro_rules! print_or_die {
     ($file:expr, $($args:expr),*) => {
@@ -397,7 +399,7 @@ pub fn gen_asm<T: std::io::Write>(input: &File, output: &mut T) {
     }
 
     // Generate bss
-    print_or_die!(output, "\nsection .bss");
+    print_or_die!(output, "section .bss");
     for (name, len) in bss {
         print_or_die!(output, "{}: resb {}", name, len);
     }
@@ -424,4 +426,27 @@ pub fn gen_asm<T: std::io::Write>(input: &File, output: &mut T) {
     for ext in externs {
         print_or_die!(output, "extern {}", ext);
     }
+}
+
+pub fn gen_obj<T: std::io::Write>(input: &File, output: &mut T) {
+    let tdir = tempdir().unwrap();
+    let tasm = tdir.path().join("asm");
+    let tobj = tdir.path().join("obj");
+
+    // Generate assembly
+    gen_asm(input, &mut std::fs::File::create(&tasm).unwrap());
+
+    // Assemble
+    let status = Command::new("nasm")
+        .args(["-f", "elf64", "-o", tobj.to_str().unwrap(),
+                tasm.to_str().unwrap()])
+        .status()
+        .expect("failed to run nasm");
+
+    if !status.success() {
+        panic!("assembly with nasm failed");
+    }
+
+    // Write assembly result to output
+    output.write(&std::fs::read(tobj).unwrap()).unwrap();
 }
