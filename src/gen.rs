@@ -56,18 +56,9 @@ fn gen_static_init<T: std::io::Write>(file: &File, init: &Init, output: &mut T) 
     };
 }
 
-fn assert_integral(dtype: &Type) {
-    match dtype {
-        Type::VOID => panic!("Math on non-integral type"),
-        Type::Array {..} => panic!("Math on non-integral type"),
-        Type::Record {..} => panic!("Math on non-integral type"),
-        _ => (),
-    }
-}
-
 // Registers usable as temporary values
 // Rip, Rsp, Rbp are reserved for the compiler's use
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Reg {
     Rax = (1 << 0),
     Rbx = (1 << 1),
@@ -138,6 +129,26 @@ impl RegMask {
         None
     }
 
+    fn maybe_alloc_specific_reg(&mut self, want: Reg) -> Option<Reg> {
+        let wantmask = want as u16;
+        if self.usedregs & wantmask == 0 {
+            self.usedregs |= wantmask;
+            Some(want)
+        } else {
+            self.alloc_reg()
+        }
+    }
+
+    fn really_alloc_specific_reg(&mut self, want: Reg) -> Option<Reg> {
+        let wantmask = want as u16;
+        if self.usedregs & wantmask == 0 {
+            self.usedregs |= wantmask;
+            Some(want)
+        } else {
+            None
+        }
+    }
+
     fn clear_reg(&mut self, reg: Reg) {
         let mask = reg as u16;
         if self.usedregs & mask == 0 {
@@ -145,7 +156,56 @@ impl RegMask {
         }
         self.usedregs &= !mask;
     }
+
+    // Save all caller-saved registers before a call (except the one used for the return value)
+    fn pushcallersaved<T: std::io::Write>(&mut self, ret: Reg, output: &mut T) -> (u16, bool) {
+        let mut savemask = 0u16;
+        let mut pad = false;
+
+        // Save all caller-saved regsiters marked as used
+        for reg in CALLER_SAVED {
+            let regmask = reg as u16;
+            if reg != ret && self.usedregs & regmask != 0 {
+                savemask |= regmask;
+                pad = !pad;
+                print_or_die!(output, "push {}", reg.to_str());
+            }
+        }
+        // Make sure stack alingment is preserved
+        if pad {
+            print_or_die!(output, "push 0");
+        }
+        // Clear the caller-saved registers in the use mask
+        self.usedregs &= !savemask;
+
+        (savemask, pad)
+    }
+
+    // Restore saved caller-saved registers
+    fn popcallersaved<T: std::io::Write>(&mut self, savemask: u16, pad: bool, output: &mut T) {
+        // Remove padding if present
+        if pad {
+            print_or_die!(output, "add rsp, 8");
+        }
+
+        // Make sure we didn't acccidently clobber one of the saved registers
+        if self.usedregs & savemask != 0 {
+            panic!("Saved register clobbered in call");
+        }
+
+        // Restore all saved registers
+        for reg in CALLER_SAVED.iter().rev() {
+            let regmask = *reg as u16;
+            if savemask & regmask != 0 {
+                print_or_die!(output, "pop {}", reg.to_str());
+            }
+        }
+
+        // Set restored registers to clobbered state again
+        self.usedregs |= savemask;
+    }
 }
+
 struct FuncCtx {
     // Register allocator
     regmask: RegMask,
@@ -155,19 +215,25 @@ struct FuncCtx {
     frame_size: usize,
 }
 
-impl FuncCtx {
-    // Find the effective address of a local variable
-    fn local_ea(&self, name: &Rc<str>) -> String {
-        let (_, offset) = self.locals.get(name).unwrap();
-        format!("[ebp - {}]", self.frame_size - offset)
-    }
-}
-
-enum Val {
+enum RVal {
     // Immediate integer value
     Immed(usize),
     // Integer (or pointer) value in a register
     Reg(Reg),
+}
+
+impl RVal {
+    fn to_string(&self) -> String {
+        match self {
+            RVal::Immed(val) => format!("{}", val),
+            RVal::Reg(reg) => String::from(reg.to_str()),
+        }
+    }
+}
+
+enum Val {
+    // Unaddressable temporary value
+    RVal(RVal),
     // Value is stored on the stack
     Stack(usize),
     // Value is stored in static storage
@@ -176,22 +242,80 @@ enum Val {
     Deref(Box<Val>, usize),
 }
 
-// Generate pointer creation code
-fn gen_ref<T: std::io::Write>(fctx: &mut FuncCtx, val: Val, output: &mut T) -> Val {
+fn rval_src(rval: RVal) -> (String, Option<Reg>) {
+    match rval {
+        RVal::Immed(val) => {
+            (format!("{}", val), None)
+        },
+        RVal::Reg(reg) => {
+            (String::from(reg.to_str()), Some(reg))
+        },
+    }
+}
+
+// Make rvalue from a value
+fn make_rval<T: std::io::Write>(fctx: &mut FuncCtx, val: Val, output: &mut T) -> RVal {
     match val {
+        Val::RVal(rval) => rval,
         Val::Stack(offset) => {
-            // FIXME: temporaries won't necessarily fit into registers
-            let reg = fctx.regmask.alloc_reg().unwrap();
-            print_or_die!(output, "lea {}, [ebp - {}]",
-                                    reg.to_str(), fctx.frame_size - offset);
-            Val::Reg(reg)
+            let dreg = fctx.regmask.alloc_reg().unwrap();
+            print_or_die!(output, "mov {}, [rbp - {}]",
+                                    dreg.to_str(), fctx.frame_size - offset);
+            RVal::Reg(dreg)
         },
         Val::Static(name, offset) => {
-            let reg = fctx.regmask.alloc_reg().unwrap();
-            print_or_die!(output, "lea {}, [{} + {}]",
-                                    reg.to_str(), name, offset);
-            Val::Reg(reg)
+            let dreg = fctx.regmask.alloc_reg().unwrap();
+            print_or_die!(output, "mov {}, [{} + {}]",
+                                    dreg.to_str(), name, offset);
+            RVal::Reg(dreg)
+        },
+        Val::Deref(ptr_val, offset) => {
+            // Compute the value of the derefed pointer as an rvalue
+            let ptr_rval = make_rval(fctx, *ptr_val, output);
+            // If it was an immediate than we must allocate a register
+            let (rval_src, rval_reg) = rval_src(ptr_rval);
+            let dreg = if let Some(dreg) = rval_reg {
+                dreg
+            } else {
+                fctx.regmask.alloc_reg().unwrap()
+            };
+            // Now we can perform the dereference
+            print_or_die!(output, "mov {}, [{} + {}]",
+                                    dreg.to_str(), rval_src, offset);
+            RVal::Reg(dreg)
+        },
+    }
+}
 
+// Make an rvalue pointer to a value
+fn make_ptr<T: std::io::Write>(fctx: &mut FuncCtx, val: Val, output: &mut T) -> RVal {
+    match val {
+        Val::Stack(offset) => {
+            let dreg = fctx.regmask.alloc_reg().unwrap();
+            print_or_die!(output, "lea {}, [rbp - {}]",
+                                    dreg.to_str(), fctx.frame_size - offset);
+            RVal::Reg(dreg)
+        },
+        Val::Static(name, offset) => {
+            let dreg = fctx.regmask.alloc_reg().unwrap();
+            print_or_die!(output, "lea {}, [{} + {}]",
+                                    dreg.to_str(), name, offset);
+            RVal::Reg(dreg)
+        },
+        Val::Deref(ptr_val, offset) => {
+            // Compute the value of the derefed pointer as an rvalue
+            let ptr_rval = make_rval(fctx, *ptr_val, output);
+            // If it was an immediate than we must allocate a register
+            let (rval_src, rval_reg) = rval_src(ptr_rval);
+            let dreg = if let Some(dreg) = rval_reg {
+                dreg
+            } else {
+                fctx.regmask.alloc_reg().unwrap()
+            };
+            // Now we can perform the dereference
+            print_or_die!(output, "lea {}, [{} + {}]",
+                                    dreg.to_str(), rval_src, offset);
+            RVal::Reg(dreg)
         },
         _ => panic!("Cannot take address of rvalue!"),
     }
@@ -207,41 +331,6 @@ fn add_offs(val: Val, add_offset: usize) -> Val {
     }
 }
 
-// Save all caller-saved registers before a call
-fn pushcallersaved<T: std::io::Write>(usedregs: u16, output: &mut T) -> (u16, bool) {
-    let mut savemask = 0u16;
-    let mut pad = false;
-    for reg in CALLER_SAVED {
-        let regmask = reg as u16;
-        if usedregs & regmask != 0 {
-            savemask |= regmask;
-            pad = !pad;
-            print_or_die!(output, "push {}", reg.to_str());
-        }
-    }
-    if pad {
-        // Make sure stack alingment is preserved
-        print_or_die!(output, "push 0");
-    }
-    (savemask, pad)
-}
-
-// Restore saved caller-saved registers
-fn popcallersaved<T: std::io::Write>(savemask: u16, pad: bool, output: &mut T) {
-    if pad {
-        // Remove padding if present
-        print_or_die!(output, "add rsp, 8");
-    }
-
-    for reg in CALLER_SAVED.iter().rev() {
-        let regmask = *reg as u16;
-        if savemask & regmask != 0 {
-            print_or_die!(output, "pop {}", reg.to_str());
-        }
-    }
-}
-
-
 fn gen_expr<T: std::io::Write>(
         file: &File,
         fctx: &mut FuncCtx,
@@ -249,14 +338,14 @@ fn gen_expr<T: std::io::Write>(
         output: &mut T) -> (Type, Val) {
 
     match in_expr {
-        Expr::U8(v)  => (Type::U8, Val::Immed(*v as usize)),
-        Expr::I8(v)  => (Type::I8, Val::Immed(*v as usize)),
-        Expr::U16(v) => (Type::U16, Val::Immed(*v as usize)),
-        Expr::I16(v) => (Type::I16, Val::Immed(*v as usize)),
-        Expr::U32(v) => (Type::U32, Val::Immed(*v as usize)),
-        Expr::I32(v) => (Type::I32, Val::Immed(*v as usize)),
-        Expr::U64(v) => (Type::U64, Val::Immed(*v as usize)),
-        Expr::I64(v) => (Type::I64, Val::Immed(*v as usize)),
+        Expr::U8(v)  => (Type::U8, Val::RVal(RVal::Immed(*v as usize))),
+        Expr::I8(v)  => (Type::I8, Val::RVal(RVal::Immed(*v as usize))),
+        Expr::U16(v) => (Type::U16, Val::RVal(RVal::Immed(*v as usize))),
+        Expr::I16(v) => (Type::I16, Val::RVal(RVal::Immed(*v as usize))),
+        Expr::U32(v) => (Type::U32, Val::RVal(RVal::Immed(*v as usize))),
+        Expr::I32(v) => (Type::I32, Val::RVal(RVal::Immed(*v as usize))),
+        Expr::U64(v) => (Type::U64, Val::RVal(RVal::Immed(*v as usize))),
+        Expr::I64(v) => (Type::I64, Val::RVal(RVal::Immed(*v as usize))),
 
         Expr::Ident(ident) => {
             if let Some((dtype, offset)) = fctx.locals.get(ident) {
@@ -271,7 +360,7 @@ fn gen_expr<T: std::io::Write>(
         Expr::Ref(expr) => {
             let (src_type, src_val) = gen_expr(file, fctx, expr, output);
             (Type::Ptr { base_type: Box::from(src_type.clone()) },
-                gen_ref(fctx, src_val, output))
+                Val::RVal(make_ptr(fctx, src_val, output)))
         },
 
         Expr::Deref(expr) => {
@@ -315,65 +404,132 @@ fn gen_expr<T: std::io::Write>(
                 },
                 _ => panic!("Function name must be an identifier"),
             };
-            // Save callee saved registers
-            let (savemask, pad) = pushcallersaved(fctx.regmask.usedregs, output);
 
+            // Allocate destination for the returned value
+            // NOTE: we prefer to allocate rax here to avoid extra moves
+            // FIXME: might not be able to allocate a register
+            let dreg = fctx.regmask.maybe_alloc_specific_reg(Reg::Rax).unwrap();
+
+            // Save caller-saved registers
+            let (savemask, pad) = fctx.regmask.pushcallersaved(dreg, output);
+
+            // Evaluate parameter expressions
             for (i, param) in params.iter().enumerate() {
-                // FIXME: support more than 6 parameters
-                let param_reg = PARAM_REGS[i];
-                let (param_type, param_val) = gen_expr(file, fctx, param, output);
+                let param_reg = fctx.regmask.
+                    really_alloc_specific_reg(PARAM_REGS[i]).unwrap();
+
+                let (_, param_val) = gen_expr(file, fctx, param, output);
+                let param_rval = make_rval(fctx, param_val, output);
+
+                match param_rval {
+                    RVal::Immed(val) => {
+                        print_or_die!(output, "mov {}, {}",
+                            param_reg.to_str(), val);
+                    },
+                    RVal::Reg(reg) => {
+                        if param_reg != reg {
+                            print_or_die!(output, "mov {}, {}",
+                                param_reg.to_str(), reg.to_str());
+                            fctx.regmask.clear_reg(reg);
+                        }
+                    },
+                }
             }
+
             if func.varargs {
-                // NOTE: Varargs functions need to be told the number of
-                // floating-point arguments
+                // Provide number of floating arguments for varargs functions
                 print_or_die!(output, "xor rax, rax");
             }
+            // Call function
             print_or_die!(output, "call {}", func.name);
 
-            // Restore registers
-            popcallersaved(savemask, pad, output);
+            // Move return value to result register
+            if dreg != Reg::Rax {
+                print_or_die!(output, "mov {}, rax", dreg.to_str());
+                fctx.regmask.clear_reg(Reg::Rax);
+            }
+            // Clear param clobbers
+            for (i, _) in params.iter().enumerate() {
+                fctx.regmask.clear_reg(PARAM_REGS[i]);
+            }
 
-            // FIXME: rax might be overwritten above
-            (func.rettype.clone(), Val::Reg(Reg::Rax))
+            // Restore caller-saved registers
+            fctx.regmask.popcallersaved(savemask, pad, output);
+
+            (func.rettype.clone(), Val::RVal(RVal::Reg(dreg)))
+        },
+
+        Expr::Inv(expr) => {
+            let (src_type, src_val) = gen_expr(file, fctx, expr, output);
+            match make_rval(fctx, src_val, output) {
+                RVal::Immed(val) => {
+                    // Fold bitwise inverse of constant
+                    (src_type, Val::RVal(RVal::Immed(!val)))
+                },
+                RVal::Reg(reg) => {
+                    print_or_die!(output, "not {}", reg.to_str());
+                    (src_type, Val::RVal(RVal::Reg(reg)))
+                },
+            }
+        },
+
+        Expr::Neg(expr) => {
+            let (src_type, src_val) = gen_expr(file, fctx, expr, output);
+            match make_rval(fctx, src_val, output) {
+                RVal::Immed(val) => {
+                    // Fold two's complement negation of constant
+                    (src_type, Val::RVal(RVal::Immed(!val + 1)))
+                },
+                RVal::Reg(reg) => {
+                    print_or_die!(output, "neg {}", reg.to_str());
+                    (src_type, Val::RVal(RVal::Reg(reg)))
+                },
+            }
+        },
+
+        Expr::Add(lhs, rhs) => {
+            let (lhs_type, lhs_val) = gen_expr(file, fctx, lhs, output);
+            let (rhs_type, rhs_val) = gen_expr(file, fctx, rhs, output);
+            if lhs_type != rhs_type {
+                panic!("Cannot add different type expressions!");
+            }
+
+            let lhs_rval = make_rval(fctx, lhs_val, output);
+            let rhs_rval = make_rval(fctx, rhs_val, output);
+
+            match lhs_rval {
+                RVal::Immed(l) => {
+                    match rhs_rval {
+                        RVal::Immed(r) => {
+                            // Fold add of two constants
+                            (lhs_type, Val::RVal(RVal::Immed(l + r)))
+                        },
+                        RVal::Reg(rreg) => {
+                            print_or_die!(output, "add {}, {}", rreg.to_str(), l);
+                            (lhs_type, Val::RVal(RVal::Reg(rreg)))
+                        },
+                    }
+                },
+                RVal::Reg(lreg) => {
+                    match rhs_rval {
+                        RVal::Immed(r) => {
+                            print_or_die!(output, "add {}, {}", lreg.to_str(), r);
+                            (lhs_type, Val::RVal(RVal::Reg(lreg)))
+                        },
+                        RVal::Reg(rreg) => {
+                            assert!(lreg != rreg); // Shouldn't ever happen
+                            print_or_die!(output, "add {}, {}",
+                                lreg.to_str(), rreg.to_str());
+                            fctx.regmask.clear_reg(rreg);
+                            (lhs_type, Val::RVal(RVal::Reg(lreg)))
+                        },
+                    }
+                },
+            }
+
         },
 
 /*
-        Expr::Inv(ref expr) => {
-            let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals, output);
-            assert_integral(&src_type);
-            val_to_accum(frame_size, accum, &src_val, output);
-            print_or_die!(output, "not {}", accum);
-            (src_type, Val::Accum)
-        },
-
-        Expr::Neg(ref expr) => {
-            let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals, output);
-            assert_integral(&src_type);
-            val_to_accum(frame_size, accum, &src_val, output);
-            print_or_die!(output, "neg {}", accum);
-            (src_type, Val::Accum)
-        },
-
-        Expr::Add(ref lhs, ref rhs) => {
-            // Evaluate LHS first
-            let (lhs_type, lhs_val) = gen_expr(file, accum, lhs, frame_size, locals, output);
-            assert_integral(&lhs_type);
-            val_to_accum(frame_size, accum, &lhs_val, output);
-            // Save LHS value to stack (twice for alingment)
-            print_or_die!(output, "push {}", accum);
-            print_or_die!(output, "push {}", accum);
-
-            // Now we can eval the RHS
-            let (rhs_type, rhs_val) = gen_expr(file, accum, rhs, frame_size, locals, output);
-            assert_integral(&rhs_type);
-            val_to_accum(frame_size, accum, &rhs_val, output);
-
-            // Add RHS to LHS
-            print_or_die!(output, "add {}, [rsp]", accum);
-            print_or_die!(output, "add rsp, 16");
-            (lhs_type, Val::Accum)
-        },
-
         Expr::Sub(ref expr1, ref expr2) => {
             gen_expr(expr1, locals, data);
             gen_expr(expr2, locals, data);
@@ -416,6 +572,34 @@ fn gen_expr<T: std::io::Write>(
             dtype.clone()
         },*/
         _ => todo!("expression {:?}", in_expr),
+    }
+}
+
+fn gen_set<T: std::io::Write>(fctx: &mut FuncCtx, dest: Val, src: RVal, output: &mut T) {
+    match dest {
+        Val::Stack(offset) => {
+            print_or_die!(output, "mov [rbp - {}], {}",
+                                    fctx.frame_size - offset, src.to_string());
+        },
+        Val::Static(name, offset) => {
+            print_or_die!(output, "mov [{} + {}], {}",
+                                    name, offset, src.to_string());
+        },
+        Val::Deref(derefed_val, offset) => {
+            panic!("FIXME: deref set");
+        },
+        _ => panic!("Write to rvalue!"),
+    }
+}
+
+fn gen_eval(fctx: &mut FuncCtx, val: Val) {
+    match val {
+        Val::RVal(rval) => match rval {
+            RVal::Reg(reg) => fctx.regmask.clear_reg(reg),
+            _ => (),
+        },
+        Val::Deref(ptr_val, _) => gen_eval(fctx, *ptr_val),
+        _ => (),
     }
 }
 
@@ -474,15 +658,22 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
             Stmt::Label(label) => {
                 print_or_die!(output, ".{}:", label);
             },
-            /*Stmt::Auto(ident, dtype, init) => {},
-            Stmt::Set(ref dest, ref expr) => {
-                let (ltype, lval) = gen_expr(file, "r10", dest, frame_size, &locals, output);
-                let (rtype, rval) = gen_expr(file, "rax", expr, frame_size, &locals, output);
-                val_to_accum(frame_size, "rax", &rval, output);
-                store_accum_to_val("rax", &lval, output);
-            }*/
+            Stmt::Auto(ident, dtype, init) => {},
+            Stmt::Set(dest, expr) => {
+                let (dest_type, dest) = gen_expr(file, &mut ctx, dest, output);
+                let (src_type, src) = gen_expr(file, &mut ctx, expr, output);
+                if dest_type != src_type {
+                    panic!("Set statement types differ, left: {:?}, right: {:?}", dest_type, src_type);
+                }
+                let src_rval = make_rval(&mut ctx, src, output);
+                gen_set(&mut ctx,
+                            dest,
+                            src_rval,
+                            output);
+            }
             Stmt::Eval(ref expr) => {
-                gen_expr(file, &mut ctx, expr, output);
+                let (_, val) = gen_expr(file, &mut ctx, expr, output);
+                gen_eval(&mut ctx, val);
             },
             Stmt::Jmp(label) => {
                 print_or_die!(output, "jmp .{}", label);

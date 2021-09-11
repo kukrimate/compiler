@@ -131,7 +131,7 @@ impl<'source> Parser<'source> {
             Token::I16  => Type::I16,
             Token::U32  => Type::U32,
             Token::I32  => Type::I32,
-            Token::U64  => Type::U32,
+            Token::U64  => Type::U64,
             Token::I64  => Type::I64,
             _ => panic!("Invalid type suffix!"),
         }

@@ -11,13 +11,13 @@ use std::rc::Rc;
 // Type system
 //
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct Record {
     pub fields: HashMap<Rc<str>, (Type, usize)>,
     pub size: usize,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone,Debug,PartialEq)]
 pub enum Type {
     VOID,
     U8,
