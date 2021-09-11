@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//
+// Recursive descent parser for the grammer described in "grammar.txt"
+//
+
 use super::ast::{Record,Type,Expr,Init,Stmt,Vis,Static,Func,File};
 use super::lex::{Lexer,Token};
 

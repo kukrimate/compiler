@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//
+// Lexical analyzer using logos
+//
+
 use logos;
 use std::collections::HashSet;
 use std::rc::Rc;
