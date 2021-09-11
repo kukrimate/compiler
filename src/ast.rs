@@ -167,6 +167,7 @@ pub struct Func {
     pub name: Rc<str>,
     // Parameters
     pub params: Vec<(Rc<str>, Type)>,
+    pub varargs: bool,
     // Return type
     pub rettype: Type,
     // Statements
@@ -179,6 +180,7 @@ impl Func {
             vis: vis,
             name: name,
             params: Vec::new(),
+            varargs: false,
             rettype: Type::VOID,
             stmts: Vec::new(),
         }

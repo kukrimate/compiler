@@ -8,7 +8,11 @@
 
 <record-declaration> ::= <record-or-union> <identifier> { [<declaration-list>] } ;
 
-<function-declaration> ::= fn [extern | export] <identifier> ( [<declaration-list>] ) [-> <type-declaration>] <function-body-or-semicolon>
+<function-declaration> ::= fn [extern | export] <identifier> ( [<arguments>] ) [-> <type-declaration>] <function-body-or-semicolon>
+
+<arguments> ::= <declaration-list>
+              | <declaration-list> , ...
+              | ...
 
 <function-body-or-semicolon> ::= ;
                                | { {<statement>}* }

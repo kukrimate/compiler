@@ -469,6 +469,13 @@ impl<'source> Parser<'source> {
                     // Read parameters
                     want!(self, Token::LParen, "Expected (");
                     while !maybe_want!(self, Token::RParen) {
+                        // Last parameter can be varargs
+                        if maybe_want!(self, Token::Varargs) {
+                            func.varargs = true;
+                            want!(self, Token::RParen, "Expected )");
+                            break;
+                        }
+                        // Otherwise try reading a normal parameter
                         let ident = self.want_ident();
                         want!(self, Token::Colon, "Expected :");
                         let r#type = self.want_type();

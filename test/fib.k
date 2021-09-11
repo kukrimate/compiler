@@ -1,5 +1,5 @@
 // Libc function
-fn extern $printf($str: *u8, $ui: u64) -> i32;
+fn extern $printf($str: *u8, ...) -> i32;
 
 // Entry point
 fn export $main($argc: i32, $argv: **u8) -> i32 {

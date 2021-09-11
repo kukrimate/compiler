@@ -188,6 +188,8 @@ pub enum Token {
     Cast,      // cast operator
     #[token("->")]
     Arrow,     // function return type
+    #[token("...")]
+    Varargs,   // variable arguments marker
 
     // Statements
     #[token("eval")]

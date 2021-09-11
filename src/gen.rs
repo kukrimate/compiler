@@ -135,13 +135,13 @@ fn gen_expr<T: std::io::Write>(
             }
         },
 
-        Expr::Ref(ref expr) => {
+        Expr::Ref(expr) => {
             let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals, output);
             ref_to_accum(frame_size, accum, &src_val, output);
             (Type::Ptr { base_type: Box::from(src_type.clone()) }, Val::Accum)
         },
 
-        Expr::Deref(ref expr) => {
+        Expr::Deref(expr) => {
             let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals, output);
             match src_type {
                 // Read the pointer's value into the accumulator, than change
@@ -156,7 +156,7 @@ fn gen_expr<T: std::io::Write>(
             }
         }
 
-        Expr::Field(ref expr, ident) => {
+        Expr::Field(expr, ident) => {
             let (src_type, src_val) = gen_expr(file, accum, expr, frame_size, locals, output);
             match src_type {
                 Type::Record(record) => {
@@ -171,11 +171,11 @@ fn gen_expr<T: std::io::Write>(
             }
         },
 
-        Expr::Call(func, ref params) => {
-            let (ident, rettype) = match &**func {
+        Expr::Call(expr, ref params) => {
+            let func = match &**expr {
                 Expr::Ident(ident) => {
                     if let Some(func) = file.funcs.get(ident) {
-                        (ident, func.rettype.clone())
+                        func
                     } else {
                         panic!("Call to undefined function {}", ident);
                     }
@@ -193,9 +193,12 @@ fn gen_expr<T: std::io::Write>(
                     _ => panic!("FIXME: too many call params"),
                 };
             }
-            print_or_die!(output, "xor rax, rax");
-            print_or_die!(output, "call {}", ident);
-            (rettype, Val::Accum)
+            if func.varargs {
+                // Varargs functions need to be told the number of float arguments
+                print_or_die!(output, "xor rax, rax");
+            }
+            print_or_die!(output, "call {}", func.name);
+            (func.rettype.clone(), Val::Accum)
         },
 
         Expr::Inv(ref expr) => {
