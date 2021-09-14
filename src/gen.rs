@@ -215,6 +215,81 @@ struct FuncCtx {
     frame_size: usize,
 }
 
+enum LVal {
+    // Value is stored on the stack
+    Stack(usize),
+    // Value is stored in static storage
+    Static(Rc<str>, usize),
+    // Dereference of a pointer
+    Deref(Box<Val>, usize),
+}
+
+impl LVal {
+    // Create a new lvalue at an offset from the current one
+    fn with_offset(self, add: usize) -> LVal {
+        match self {
+            LVal::Stack(o) => LVal::Stack(o + add),
+            LVal::Static(name, o) => LVal::Static(name, o + add),
+            LVal::Deref(ptr, o) => LVal::Deref(ptr, o + add),
+        }
+    }
+
+    // Create an rvalue from this lvalue
+    fn to_rval<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> RVal {
+        match self {
+            LVal::Stack(offset) => {
+                let dreg = fctx.regmask.alloc_reg().unwrap();
+                print_or_die!(output, "mov {}, [rbp - {}]",
+                                        dreg.to_str(), fctx.frame_size - offset);
+                RVal::Reg(dreg)
+            },
+            LVal::Static(name, offset) => {
+                let dreg = fctx.regmask.alloc_reg().unwrap();
+                print_or_die!(output, "mov {}, [{} + {}]",
+                                        dreg.to_str(), name, offset);
+                RVal::Reg(dreg)
+            },
+            LVal::Deref(ptr, offset) => {
+                // Store pointer value in a register
+                let dreg = ptr.as_rval(fctx, output).to_reg(fctx, output);
+                // Perform the dereference
+                print_or_die!(output, "mov {}, [{} + {}]",
+                                        dreg.to_str(), dreg.to_str(), offset);
+                RVal::Reg(dreg)
+            },
+        }
+    }
+
+    // Create an rvalue pointer to this lvalue
+    fn to_ptr<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> RVal {
+        match self {
+            LVal::Stack(offset) => {
+                let dreg = fctx.regmask.alloc_reg().unwrap();
+                print_or_die!(output, "lea {}, [rbp - {}]",
+                                        dreg.to_str(), fctx.frame_size - offset);
+                RVal::Reg(dreg)
+            },
+            LVal::Static(name, offset) => {
+                let dreg = fctx.regmask.alloc_reg().unwrap();
+                print_or_die!(output, "lea {}, [{} + {}]",
+                                        dreg.to_str(), name, offset);
+                RVal::Reg(dreg)
+            },
+            LVal::Deref(ptr, offset) => {
+                // Store pointer value in a register
+                let dreg = ptr.as_rval(fctx, output).to_reg(fctx, output);
+                // Add offset to pointer if required
+                if offset > 0 {
+                    print_or_die!(output, "lea {}, [{} + {}]",
+                                    dreg.to_str(), dreg.to_str(), offset);
+                }
+                RVal::Reg(dreg)
+            },
+        }
+    }
+
+}
+
 enum RVal {
     // Immediate integer value
     Immed(usize),
@@ -223,6 +298,19 @@ enum RVal {
 }
 
 impl RVal {
+    fn to_reg<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> Reg {
+        match self {
+            RVal::Immed(val) => {
+                let dreg = fctx.regmask.alloc_reg().unwrap();
+                print_or_die!(output, "mov {}, {}", dreg.to_str(), val);
+                dreg
+            },
+            RVal::Reg(reg) => {
+                reg
+            },
+        }
+    }
+
     fn to_string(&self) -> String {
         match self {
             RVal::Immed(val) => format!("{}", val),
@@ -232,102 +320,18 @@ impl RVal {
 }
 
 enum Val {
+    // Addressable value
+    LVal(LVal),
     // Unaddressable temporary value
     RVal(RVal),
-    // Value is stored on the stack
-    Stack(usize),
-    // Value is stored in static storage
-    Static(Rc<str>, usize),
-    // Dereference of a pointer
-    Deref(Box<Val>, usize),
 }
 
-fn rval_src(rval: RVal) -> (String, Option<Reg>) {
-    match rval {
-        RVal::Immed(val) => {
-            (format!("{}", val), None)
-        },
-        RVal::Reg(reg) => {
-            (String::from(reg.to_str()), Some(reg))
-        },
-    }
-}
-
-// Make rvalue from a value
-fn make_rval<T: std::io::Write>(fctx: &mut FuncCtx, val: Val, output: &mut T) -> RVal {
-    match val {
-        Val::RVal(rval) => rval,
-        Val::Stack(offset) => {
-            let dreg = fctx.regmask.alloc_reg().unwrap();
-            print_or_die!(output, "mov {}, [rbp - {}]",
-                                    dreg.to_str(), fctx.frame_size - offset);
-            RVal::Reg(dreg)
-        },
-        Val::Static(name, offset) => {
-            let dreg = fctx.regmask.alloc_reg().unwrap();
-            print_or_die!(output, "mov {}, [{} + {}]",
-                                    dreg.to_str(), name, offset);
-            RVal::Reg(dreg)
-        },
-        Val::Deref(ptr_val, offset) => {
-            // Compute the value of the derefed pointer as an rvalue
-            let ptr_rval = make_rval(fctx, *ptr_val, output);
-            // If it was an immediate than we must allocate a register
-            let (rval_src, rval_reg) = rval_src(ptr_rval);
-            let dreg = if let Some(dreg) = rval_reg {
-                dreg
-            } else {
-                fctx.regmask.alloc_reg().unwrap()
-            };
-            // Now we can perform the dereference
-            print_or_die!(output, "mov {}, [{} + {}]",
-                                    dreg.to_str(), rval_src, offset);
-            RVal::Reg(dreg)
-        },
-    }
-}
-
-// Make an rvalue pointer to a value
-fn make_ptr<T: std::io::Write>(fctx: &mut FuncCtx, val: Val, output: &mut T) -> RVal {
-    match val {
-        Val::Stack(offset) => {
-            let dreg = fctx.regmask.alloc_reg().unwrap();
-            print_or_die!(output, "lea {}, [rbp - {}]",
-                                    dreg.to_str(), fctx.frame_size - offset);
-            RVal::Reg(dreg)
-        },
-        Val::Static(name, offset) => {
-            let dreg = fctx.regmask.alloc_reg().unwrap();
-            print_or_die!(output, "lea {}, [{} + {}]",
-                                    dreg.to_str(), name, offset);
-            RVal::Reg(dreg)
-        },
-        Val::Deref(ptr_val, offset) => {
-            // Compute the value of the derefed pointer as an rvalue
-            let ptr_rval = make_rval(fctx, *ptr_val, output);
-            // If it was an immediate than we must allocate a register
-            let (rval_src, rval_reg) = rval_src(ptr_rval);
-            let dreg = if let Some(dreg) = rval_reg {
-                dreg
-            } else {
-                fctx.regmask.alloc_reg().unwrap()
-            };
-            // Now we can perform the dereference
-            print_or_die!(output, "lea {}, [{} + {}]",
-                                    dreg.to_str(), rval_src, offset);
-            RVal::Reg(dreg)
-        },
-        _ => panic!("Cannot take address of rvalue!"),
-    }
-}
-
-// Create value at an offset from an lvalue
-fn add_offs(val: Val, add_offset: usize) -> Val {
-    match val {
-        Val::Stack(offset) => Val::Stack(offset + add_offset),
-        Val::Static(name, offset) => Val::Static(name, offset + add_offset),
-        Val::Deref(derefed_val, offset) => Val::Deref(derefed_val, offset + add_offset),
-        _ => panic!("Cannot take offset from rvalue!"),
+impl Val {
+    fn as_rval<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> RVal {
+        match self {
+            Val::LVal(lval) => lval.to_rval(fctx, output),
+            Val::RVal(rval) => rval,
+        }
     }
 }
 
@@ -349,18 +353,18 @@ fn gen_expr<T: std::io::Write>(
 
         Expr::Ident(ident) => {
             if let Some((dtype, offset)) = fctx.locals.get(ident) {
-                (dtype.clone(), Val::Stack(*offset))
+                (dtype.clone(), Val::LVal(LVal::Stack(*offset)))
             } else if let Some(s) = file.statics.get(ident) {
-                (s.dtype.clone(), Val::Static(ident.clone(), 0))
+                (s.dtype.clone(), Val::LVal(LVal::Static(ident.clone(), 0)))
             } else {
                 panic!("Unknown identifier {}", ident);
             }
         },
 
         Expr::Ref(expr) => {
-            let (src_type, src_val) = gen_expr(file, fctx, expr, output);
+            let (src_type, src_lval) = gen_lval_expr(file, fctx, expr, output);
             (Type::Ptr { base_type: Box::from(src_type.clone()) },
-                Val::RVal(make_ptr(fctx, src_val, output)))
+                Val::RVal(src_lval.to_ptr(fctx, output)))
         },
 
         Expr::Deref(expr) => {
@@ -368,7 +372,7 @@ fn gen_expr<T: std::io::Write>(
             match src_type {
                 // Create dereferenced value from pointer
                 Type::Ptr { base_type } =>
-                    ((*base_type).clone(), Val::Deref(Box::from(src_val), 0)),
+                    ((*base_type).clone(), Val::LVal(LVal::Deref(Box::from(src_val), 0))),
                 // Create new value with the array's element type at the same location
                 // (offset was already added to the array's value if this deref was
                 // de-sugared from array indexing)
@@ -379,11 +383,11 @@ fn gen_expr<T: std::io::Write>(
         }
 
         Expr::Field(expr, ident) => {
-            let (src_type, src_val) = gen_expr(file, fctx, expr, output);
+            let (src_type, src_lval) = gen_lval_expr(file, fctx, expr, output);
             match src_type {
                 Type::Record(record) => {
                     if let Some((field_type, field_offset)) = record.fields.get(ident) {
-                        (field_type.clone(), add_offs(src_val, *field_offset))
+                        (field_type.clone(), Val::LVal(src_lval.with_offset(*field_offset)))
                     } else {
                         panic!("Non-existent field {} accessed", ident);
                     }
@@ -419,9 +423,8 @@ fn gen_expr<T: std::io::Write>(
                     really_alloc_specific_reg(PARAM_REGS[i]).unwrap();
 
                 let (_, param_val) = gen_expr(file, fctx, param, output);
-                let param_rval = make_rval(fctx, param_val, output);
 
-                match param_rval {
+                match param_val.as_rval(fctx, output) {
                     RVal::Immed(val) => {
                         print_or_die!(output, "mov {}, {}",
                             param_reg.to_str(), val);
@@ -461,7 +464,7 @@ fn gen_expr<T: std::io::Write>(
 
         Expr::Inv(expr) => {
             let (src_type, src_val) = gen_expr(file, fctx, expr, output);
-            match make_rval(fctx, src_val, output) {
+            match src_val.as_rval(fctx, output) {
                 RVal::Immed(val) => {
                     // Fold bitwise inverse of constant
                     (src_type, Val::RVal(RVal::Immed(!val)))
@@ -475,7 +478,7 @@ fn gen_expr<T: std::io::Write>(
 
         Expr::Neg(expr) => {
             let (src_type, src_val) = gen_expr(file, fctx, expr, output);
-            match make_rval(fctx, src_val, output) {
+            match src_val.as_rval(fctx, output) {
                 RVal::Immed(val) => {
                     // Fold two's complement negation of constant
                     (src_type, Val::RVal(RVal::Immed(!val + 1)))
@@ -491,12 +494,12 @@ fn gen_expr<T: std::io::Write>(
             let (lhs_type, lhs_val) = gen_expr(file, fctx, lhs, output);
             let (rhs_type, rhs_val) = gen_expr(file, fctx, rhs, output);
             if lhs_type != rhs_type {
-                panic!("Cannot add different type expressions!");
+                panic!("Add type mismatch, left: {:?}, right: {:?}",
+                         lhs_type, rhs_type);
             }
 
-            let lhs_rval = make_rval(fctx, lhs_val, output);
-            let rhs_rval = make_rval(fctx, rhs_val, output);
-
+            let lhs_rval = lhs_val.as_rval(fctx, output);
+            let rhs_rval = rhs_val.as_rval(fctx, output);
             match lhs_rval {
                 RVal::Immed(l) => {
                     match rhs_rval {
@@ -528,7 +531,6 @@ fn gen_expr<T: std::io::Write>(
             }
 
         },
-
 /*
         Expr::Sub(ref expr1, ref expr2) => {
             gen_expr(expr1, locals, data);
@@ -566,41 +568,62 @@ fn gen_expr<T: std::io::Write>(
             gen_expr(expr1, locals, data);
             gen_expr(expr2, locals, data);
         },
+        */
 
-        Expr::Cast(ref expr, dtype) => {
-            gen_expr(expr, locals, data);
-            dtype.clone()
-        },*/
+        Expr::Cast(expr, dtype) => {
+            let (_, src_val) = gen_expr(file, fctx, expr, output);
+            (dtype.clone(), src_val)
+        },
         _ => todo!("expression {:?}", in_expr),
     }
 }
 
-fn gen_set<T: std::io::Write>(fctx: &mut FuncCtx, dest: Val, src: RVal, output: &mut T) {
-    match dest {
-        Val::Stack(offset) => {
-            print_or_die!(output, "mov [rbp - {}], {}",
-                                    fctx.frame_size - offset, src.to_string());
-        },
-        Val::Static(name, offset) => {
-            print_or_die!(output, "mov [{} + {}], {}",
-                                    name, offset, src.to_string());
-        },
-        Val::Deref(derefed_val, offset) => {
-            panic!("FIXME: deref set");
-        },
-        _ => panic!("Write to rvalue!"),
+fn gen_lval_expr<T: std::io::Write>(
+        file: &File,
+        fctx: &mut FuncCtx,
+        in_expr: &Expr,
+        output: &mut T) -> (Type, LVal) {
+
+    let (dtype, val) = gen_expr(file, fctx, in_expr, output);
+    match val {
+        Val::LVal(lval) => (dtype, lval),
+        _ => panic!("Expected lvalue expression!"),
     }
 }
 
-fn gen_eval(fctx: &mut FuncCtx, val: Val) {
+fn discard_val(fctx: &mut FuncCtx, val: Val) {
     match val {
         Val::RVal(rval) => match rval {
             RVal::Reg(reg) => fctx.regmask.clear_reg(reg),
             _ => (),
         },
-        Val::Deref(ptr_val, _) => gen_eval(fctx, *ptr_val),
+        Val::LVal(lval) => match lval {
+            LVal::Deref(ptr, _) => discard_val(fctx, *ptr),
+            _ => (),
+        },
         _ => (),
     }
+}
+
+fn gen_set<T: std::io::Write>(fctx: &mut FuncCtx, dest: LVal, src: RVal, output: &mut T) {
+    // Write source value to destination
+    match dest {
+        LVal::Stack(offset) => {
+            print_or_die!(output, "mov qword [rbp - {}], {}",
+                                    fctx.frame_size - offset, src.to_string());
+        },
+        LVal::Static(name, offset) => {
+            print_or_die!(output, "mov qword [{} + {}], {}",
+                                    name, offset, src.to_string());
+        },
+        LVal::Deref(ptr, offset) => {
+            panic!("FIXME: deref set");
+        },
+        _ => panic!("Write to rvalue!"),
+    }
+
+    // If the source was a register, make sure it get's deallocated
+    discard_val(fctx, Val::RVal(src));
 }
 
 fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
@@ -660,20 +683,17 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
             },
             Stmt::Auto(ident, dtype, init) => {},
             Stmt::Set(dest, expr) => {
-                let (dest_type, dest) = gen_expr(file, &mut ctx, dest, output);
+                let (dest_type, dest) = gen_lval_expr(file, &mut ctx, dest, output);
                 let (src_type, src) = gen_expr(file, &mut ctx, expr, output);
                 if dest_type != src_type {
                     panic!("Set statement types differ, left: {:?}, right: {:?}", dest_type, src_type);
                 }
-                let src_rval = make_rval(&mut ctx, src, output);
-                gen_set(&mut ctx,
-                            dest,
-                            src_rval,
-                            output);
+                let src_rval = src.as_rval(&mut ctx, output);
+                gen_set(&mut ctx, dest, src_rval, output);
             }
             Stmt::Eval(ref expr) => {
                 let (_, val) = gen_expr(file, &mut ctx, expr, output);
-                gen_eval(&mut ctx, val);
+                discard_val(&mut ctx, val);
             },
             Stmt::Jmp(label) => {
                 print_or_die!(output, "jmp .{}", label);
