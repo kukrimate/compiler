@@ -125,6 +125,22 @@ pub enum Init {
     List(Vec<Init>),
 }
 
+impl Init {
+    pub fn want_expr(&self) -> &Expr {
+        match self {
+            Init::Base(expr) => expr,
+            _ => panic!("Wanted bare initializer!"),
+        }
+    }
+
+    pub fn want_list(&self) -> &Vec<Init> {
+        match self {
+            Init::List(list) => list,
+            _ => panic!("Wanted initializer list!"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Stmt {
     Eval(Expr),

@@ -1,3 +1,3 @@
 fn $foo() {
-    set *(0xdeadbeef u64 as *u8) = 55 u8;
+    auto $arr: [u8; 5 u8] = { 1 u8, 2 u8, 3 u8, 4 u8, 5 u8 };
 }

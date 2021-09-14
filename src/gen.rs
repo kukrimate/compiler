@@ -215,6 +215,7 @@ struct FuncCtx {
     frame_size: usize,
 }
 
+#[derive(Clone)]
 enum LVal {
     // Value is stored on the stack
     Stack(usize),
@@ -290,6 +291,7 @@ impl LVal {
 
 }
 
+#[derive(Clone)]
 enum RVal {
     // Immediate integer value
     Immed(usize),
@@ -319,6 +321,7 @@ impl RVal {
     }
 }
 
+#[derive(Clone)]
 enum Val {
     // Addressable value
     LVal(LVal),
@@ -626,6 +629,41 @@ fn gen_set<T: std::io::Write>(dest: LVal, src: RVal, fctx: &mut FuncCtx, output:
     Val::RVal(src).discard(fctx);
 }
 
+fn gen_init<T: std::io::Write>(
+        dest: LVal,
+        dest_type: &Type,
+        init: &Init,
+        file: &File,
+        fctx: &mut FuncCtx,
+        output: &mut T) {
+
+    match dest_type {
+        Type::VOID => panic!("Initializer for void!"),
+        Type::Array { elem_type, elem_count } => {
+            let init_list = init.want_list();
+            if init_list.len() != *elem_count {
+                panic!("Invalid array initializer!");
+            }
+            for (i, elem_init) in init_list.iter().enumerate() {
+                gen_init(dest.clone().with_offset(i * elem_type.get_size()),
+                    elem_type, elem_init, file, fctx, output);
+            }
+        },
+        Type::Record(record) => {
+            let init_list = init.want_list();
+            for (i, (_, (field_type, field_offset))) in record.fields.iter().enumerate() {
+                gen_init(dest.clone().with_offset(*field_offset),
+                    field_type, &init_list[i], file, fctx, output);
+            }
+        },
+        _ => { // Integer/pointer types
+            let (_, val) = gen_expr(file, fctx, init.want_expr(), output);
+            let rval = val.as_rval(fctx, output);
+            gen_set(dest, rval, fctx, output);
+        },
+    }
+}
+
 fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
     print_or_die!(output, "{}:", func.name);
 
@@ -681,7 +719,13 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
             Stmt::Label(label) => {
                 print_or_die!(output, ".{}:", label);
             },
-            Stmt::Auto(ident, dtype, init) => {},
+            Stmt::Auto(ident, dtype, init) => {
+                if let Some(init) = init {
+                    let (_, offset) = ctx.locals.get(ident).unwrap();
+                    gen_init(LVal::Stack(*offset), dtype, init,
+                        &file, &mut ctx, output);
+                }
+            },
             Stmt::Set(dest, expr) => {
                 let (dest_type, dest) = gen_lval_expr(file, &mut ctx, dest, output);
                 let (src_type, src) = gen_expr(file, &mut ctx, expr, output);
