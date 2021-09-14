@@ -333,6 +333,19 @@ impl Val {
             Val::RVal(rval) => rval,
         }
     }
+
+    fn discard(self, fctx: &mut FuncCtx) {
+        match self {
+            Val::RVal(rval) => match rval {
+                RVal::Reg(reg) => fctx.regmask.clear_reg(reg),
+                _ => (),
+            },
+            Val::LVal(lval) => match lval {
+                LVal::Deref(ptr, _) => ptr.discard(fctx),
+                _ => (),
+            },
+        }
+    }
 }
 
 fn gen_expr<T: std::io::Write>(
@@ -591,21 +604,7 @@ fn gen_lval_expr<T: std::io::Write>(
     }
 }
 
-fn discard_val(fctx: &mut FuncCtx, val: Val) {
-    match val {
-        Val::RVal(rval) => match rval {
-            RVal::Reg(reg) => fctx.regmask.clear_reg(reg),
-            _ => (),
-        },
-        Val::LVal(lval) => match lval {
-            LVal::Deref(ptr, _) => discard_val(fctx, *ptr),
-            _ => (),
-        },
-        _ => (),
-    }
-}
-
-fn gen_set<T: std::io::Write>(fctx: &mut FuncCtx, dest: LVal, src: RVal, output: &mut T) {
+fn gen_set<T: std::io::Write>(dest: LVal, src: RVal, fctx: &mut FuncCtx, output: &mut T) {
     // Write source value to destination
     match dest {
         LVal::Stack(offset) => {
@@ -617,13 +616,14 @@ fn gen_set<T: std::io::Write>(fctx: &mut FuncCtx, dest: LVal, src: RVal, output:
                                     name, offset, src.to_string());
         },
         LVal::Deref(ptr, offset) => {
-            panic!("FIXME: deref set");
+            let ptr_rval = ptr.as_rval(fctx, output);
+            print_or_die!(output, "mov qword [{} + {}], {}",
+                                    ptr_rval.to_string(), offset, src.to_string());
         },
-        _ => panic!("Write to rvalue!"),
     }
 
     // If the source was a register, make sure it get's deallocated
-    discard_val(fctx, Val::RVal(src));
+    Val::RVal(src).discard(fctx);
 }
 
 fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
@@ -689,11 +689,11 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
                     panic!("Set statement types differ, left: {:?}, right: {:?}", dest_type, src_type);
                 }
                 let src_rval = src.as_rval(&mut ctx, output);
-                gen_set(&mut ctx, dest, src_rval, output);
+                gen_set(dest, src_rval, &mut ctx, output);
             }
             Stmt::Eval(ref expr) => {
                 let (_, val) = gen_expr(file, &mut ctx, expr, output);
-                discard_val(&mut ctx, val);
+                val.discard(&mut ctx);
             },
             Stmt::Jmp(label) => {
                 print_or_die!(output, "jmp .{}", label);
