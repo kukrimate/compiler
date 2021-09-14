@@ -1,3 +1,6 @@
-fn $foo() {
-    auto $arr: [u8; 5 u8] = { 1 u8, 2 u8, 3 u8, 4 u8, 5 u8 };
+fn $foo() -> i32 {
+    auto $i: i32 = 1 i32;
+    ret $i;
+    auto $j: i32 = $i + 5i32;
+    ret;
 }

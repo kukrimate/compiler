@@ -2,8 +2,7 @@
 fn extern $printf($str: *u8, ...) -> i32;
 
 // Entry point
-//fn export $main($argc: i32, $argv: **u8) -> i32 {
-fn export $main() -> i32 {
+fn export $main() {
     auto $i: u64 = 1u64;
     auto $j: u64 = 1u64;
     auto $t: u64;

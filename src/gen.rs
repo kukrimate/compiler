@@ -664,6 +664,13 @@ fn gen_init<T: std::io::Write>(
     }
 }
 
+fn gen_ret<T: std::io::Write>(retval: RVal, fctx: &mut FuncCtx, output: &mut T) {
+    // Move return value to rax
+    print_or_die!(output, "mov rax, {}", retval.to_string());
+    // Make sure later expression won't think the return value register is clobbered
+    Val::RVal(retval).discard(fctx);
+}
+
 fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
     print_or_die!(output, "{}:", func.name);
 
@@ -742,7 +749,12 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
             Stmt::Jmp(label) => {
                 print_or_die!(output, "jmp .{}", label);
             },
-            Stmt::Ret(_) => {
+            Stmt::Ret(maybe_expr) => {
+                if let Some(expr) = maybe_expr {
+                    let (_, val) = gen_expr(file, &mut ctx, expr, output);
+                    let rval = val.as_rval(&mut ctx, output);
+                    gen_ret(rval, &mut ctx, output);
+                }
                 print_or_die!(output, "jmp done");
             },
             _ => todo!("statement {:?}", stmt),

@@ -144,7 +144,7 @@ impl Init {
 #[derive(Debug)]
 pub enum Stmt {
     Eval(Expr),
-    Ret(Expr),
+    Ret(Option<Expr>),
     Auto(Rc<str>, Type, Option<Init>),
     Label(Rc<str>),
     Set(Expr, Expr),

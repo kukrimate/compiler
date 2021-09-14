@@ -369,7 +369,14 @@ impl<'source> Parser<'source> {
     fn want_stmt(&mut self) -> Stmt {
         let stmt = match self.next_token() {
             Token::Eval     => Stmt::Eval(self.want_expr()),
-            Token::Ret      => Stmt::Ret(self.want_expr()),
+            Token::Ret      => {
+                if maybe_want!(self, Token::Semicolon) {
+                    // NOTE: return since we already have the semicolon
+                    return Stmt::Ret(None)
+                } else {
+                    Stmt::Ret(Some(self.want_expr()))
+                }
+            },
             Token::Auto     => {
                 let ident = self.want_ident();
                 want!(self, Token::Colon, "Expected :");
