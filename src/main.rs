@@ -34,7 +34,7 @@ fn main() {
     let data = std::fs::read_to_string(args.value_of("INPUT").unwrap()).unwrap();
     let file = parser::parse_file(&data);
 
-    // Call collect generation function based on if assembly is wanted
+    // Call generation function based on if assembly is wanted
     if args.occurrences_of("assembly") > 0 {
         if let Some(path) = args.value_of("output") {
             gen::gen_asm(&file, &mut std::fs::File::create(path).unwrap());

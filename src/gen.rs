@@ -545,7 +545,6 @@ fn gen_expr<T: std::io::Write>(
                     }
                 },
             }
-
         },
 /*
         Expr::Sub(ref expr1, ref expr2) => {
@@ -671,6 +670,13 @@ fn gen_ret<T: std::io::Write>(retval: RVal, fctx: &mut FuncCtx, output: &mut T) 
     Val::RVal(retval).discard(fctx);
 }
 
+fn gen_jcc<T: std::io::Write>(val1: RVal, val2: RVal, fctx: &mut FuncCtx, output: &mut T) {
+    print_or_die!(output, "cmp {}, {}", val1.to_string(), val2.to_string());
+    // We can de-clobber all registers allocated for temporaries (if any)
+    Val::RVal(val1).discard(fctx);
+    Val::RVal(val2).discard(fctx);
+}
+
 fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
     print_or_die!(output, "{}:", func.name);
 
@@ -682,16 +688,12 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
     };
 
     // Allocate stack slots for parameters
-    // We note than the param to offset map for later use
-    let mut params = Vec::new();
-    for (i, (name, t)) in func.params.iter().enumerate() {
-        if t.get_size() > 8 {
-            panic!("FIXME: larger-than register parameters!");
+    for (name, dtype) in &func.params {
+        if dtype.get_size() > 8 {
+            todo!("larger-than register parameters");
         }
         // Add local variable for parameter
-        ctx.locals.insert(name.clone(), (t.clone(), ctx.frame_size));
-        // Save index to stack offset map
-        params.push((i, ctx.frame_size));
+        ctx.locals.insert(name.clone(), (dtype.clone(), ctx.frame_size));
         // Increase stack frame size
         // HACK!: assume all parameters are 8 bytes for simpler moves
         ctx.frame_size += 8;
@@ -708,17 +710,19 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
         }
     }
 
-    // Align frame size to a multiple of 16, then add 8 (sysv abi)
+    // Align stack frame size to a multiple of 16 + 8 (SysV ABI requirement)
     ctx.frame_size = (ctx.frame_size + 15) / 16 * 16 + 8;
     // Generate function prologue
     print_or_die!(output, "push rbp\nmov rbp, rsp\nsub rsp, {}", ctx.frame_size);
 
     // Move parameters from registers to stack
-    for (i, offset) in params {
-        // FIXME: support more than 6 parameters
-        print_or_die!(output, "mov qword [rbp - {}], {}",
-                ctx.frame_size - offset,
-                PARAM_REGS[i].to_str());
+    for (i, (name, _)) in func.params.iter().enumerate() {
+        let (_, offset) = ctx.locals.get(name).unwrap();
+        // FIXME1: support more than 6 parameters
+        // FIXME2: register allocator breaks if we don't first set the
+        //         param register to be clobbered (gen_set will clear it)
+        ctx.regmask.usedregs |= PARAM_REGS[i] as u16;
+        gen_set(LVal::Stack(*offset), RVal::Reg(PARAM_REGS[i]), &mut ctx, output);
     }
 
     for stmt in &func.stmts {
@@ -755,14 +759,53 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
                     let rval = val.as_rval(&mut ctx, output);
                     gen_ret(rval, &mut ctx, output);
                 }
-                print_or_die!(output, "jmp done");
+                print_or_die!(output, "jmp .done");
             },
-            _ => todo!("statement {:?}", stmt),
+            Stmt::Jeq(label, expr1, expr2) => {
+                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
+                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                gen_jcc(val1.as_rval(&mut ctx, output),
+                        val2.as_rval(&mut ctx, output),
+                        &mut ctx, output);
+                print_or_die!(output, "je .{}", label);
+            },
+            Stmt::Jl(label, expr1, expr2) => {
+                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
+                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                gen_jcc(val1.as_rval(&mut ctx, output),
+                        val2.as_rval(&mut ctx, output),
+                        &mut ctx, output);
+                print_or_die!(output, "jl .{}", label);
+            },
+            Stmt::Jle(label, expr1, expr2) => {
+                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
+                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                gen_jcc(val1.as_rval(&mut ctx, output),
+                        val2.as_rval(&mut ctx, output),
+                        &mut ctx, output);
+                print_or_die!(output, "jle .{}", label);
+            },
+            Stmt::Jg(label, expr1, expr2) => {
+                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
+                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                gen_jcc(val1.as_rval(&mut ctx, output),
+                        val2.as_rval(&mut ctx, output),
+                        &mut ctx, output);
+                print_or_die!(output, "jg .{}", label);
+            },
+            Stmt::Jge(label, expr1, expr2) => {
+                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
+                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                gen_jcc(val1.as_rval(&mut ctx, output),
+                        val2.as_rval(&mut ctx, output),
+                        &mut ctx, output);
+                print_or_die!(output, "jge .{}", label);
+            },
         }
     }
 
     // Generate function epilogue
-    print_or_die!(output, "done:\nleave\nret");
+    print_or_die!(output, ".done:\nleave\nret");
 }
 
 pub fn gen_asm<T: std::io::Write>(input: &File, output: &mut T) {

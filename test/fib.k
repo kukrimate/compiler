@@ -7,9 +7,9 @@ fn export $main() {
     auto $j: u64 = 1u64;
     auto $t: u64;
 @loop:
+    eval $printf("%ld\n" u8, $i);
     set $t = $j;
     set $j = $i + $j;
     set $i = $t;
-    eval $printf("%ld\n" u8, $i);
     jmp @loop;
 }
