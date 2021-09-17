@@ -1,8 +1,9 @@
-fn extern $gets($s: *u8) -> *u8;
+fn extern $printf($str: *u8, ...) -> i32;
 
 fn export $main() {
-    auto $arr: [u8; 100u32];
-    eval $gets(&$arr);
-
-    auto $i: u8 = 10u8 * 50u8;
+    auto $i: i32 = 0i32;
+@loop:
+    eval $printf("%d\n"u8, $i);
+    set $i = $i + 1i32;
+    jl @loop, $i, 25i32;
 }

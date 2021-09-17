@@ -22,17 +22,17 @@ fn gen_static_init<T: std::io::Write>(file: &File, init: &Init, output: &mut T) 
             match expr {
                 Expr::Const(dtype, v) => {
                     match dtype {
-                        Type::U8  => { print_or_die!(output, "db {}", v); },
-                        Type::I8  => { print_or_die!(output, "db {}", v); },
-                        Type::U16 => { print_or_die!(output, "dw {}", v); },
-                        Type::I16 => { print_or_die!(output, "dw {}", v); },
-                        Type::U32 => { print_or_die!(output, "dd {}", v); },
-                        Type::I32 => { print_or_die!(output, "dd {}", v); },
-                        Type::U64 => { print_or_die!(output, "dq {}", v); },
-                        Type::I64 => { print_or_die!(output, "dq {}", v); },
-                        Type::Ptr {..} => { print_or_die!(output, "dq {}", v); },
+                        Type::U8  => { print_or_die!(output, "db 0x{:X}", *v as u8); },
+                        Type::I8  => { print_or_die!(output, "db 0x{:X}", *v as u8); },
+                        Type::U16 => { print_or_die!(output, "dw 0x{:X}", *v as u16); },
+                        Type::I16 => { print_or_die!(output, "dw 0x{:X}", *v as u16); },
+                        Type::U32 => { print_or_die!(output, "dd 0x{:X}", *v as u32); },
+                        Type::I32 => { print_or_die!(output, "dd 0x{:X}", *v as u32); },
+                        Type::U64 => { print_or_die!(output, "dq 0x{:X}", *v as u64); },
+                        Type::I64 => { print_or_die!(output, "dq 0x{:X}", *v as u64); },
+                        Type::Ptr {..} => { print_or_die!(output, "dq 0x{:X}", *v as u64); },
                         // Constants can't possibly have other types
-                        _ => unreachable!(),
+                        dtype => panic!("Constant cannot have type {:?}", dtype),
                     }
                 },
 
@@ -46,6 +46,7 @@ fn gen_static_init<T: std::io::Write>(file: &File, init: &Init, output: &mut T) 
                         panic!("Unknown")
                     }
                 },
+
                 // Or by a pointer to a static (or string literal)
                 Expr::Ref(dest) => {
                     match &**dest {
@@ -55,6 +56,7 @@ fn gen_static_init<T: std::io::Write>(file: &File, init: &Init, output: &mut T) 
                         _ => panic!("Non constant static initializer"),
                     }
                 },
+
                 _ => panic!("Non constant static initializer"),
             }
         },
@@ -85,13 +87,35 @@ enum Reg {
 }
 
 impl Reg {
-    fn to_str(&self) -> &str {
+    fn to_str(&self, dtype: &Type) -> &str {
+        let width = match dtype {
+            Type::U8  => 0,
+            Type::I8  => 0,
+            Type::U16 => 1,
+            Type::I16 => 1,
+            Type::U32 => 2,
+            Type::I32 => 2,
+            Type::U64 => 3,
+            Type::I64 => 3,
+            Type::Ptr {..} => 3,
+            _ => panic!("Invalid data type for rvalue"),
+        };
+
         match self {
-            Reg::Rax => "rax", Reg::Rbx => "rbx", Reg::Rcx => "rcx",
-            Reg::Rdx => "rdx", Reg::Rsi => "rsi", Reg::Rdi => "rdi",
-            Reg::R8  => "r8" , Reg::R9  => "r9" , Reg::R10 => "r10",
-            Reg::R11 => "r11", Reg::R12 => "r12", Reg::R13 => "r13",
-            Reg::R14 => "r14", Reg::R15 => "r15"
+            Reg::Rax => ["al", "ax", "eax", "rax"][width],
+            Reg::Rbx => ["bl", "bx", "ebx", "rbx"][width],
+            Reg::Rcx => ["cl", "cx", "ecx", "rcx"][width],
+            Reg::Rdx => ["dl", "dx", "edx", "rdx"][width],
+            Reg::Rsi => ["sil", "si", "esi", "rsi"][width],
+            Reg::Rdi => ["dil", "di", "edi", "rdi"][width],
+            Reg::R8  => ["r8b", "r8w", "r8d", "r8"][width],
+            Reg::R9  => ["r9b", "r9w", "r9d", "r9"][width],
+            Reg::R10 => ["r10b", "r10w", "r10d", "r10"][width],
+            Reg::R11 => ["r11b", "r11w", "r11d", "r11"][width],
+            Reg::R12 => ["r12b", "r12w", "r12d", "r12"][width],
+            Reg::R13 => ["r13b", "r13w", "r13d", "r13"][width],
+            Reg::R14 => ["r14b", "r14w", "r14d", "r14"][width],
+            Reg::R15 => ["r15b", "r15w", "r15d", "r15"][width],
         }
     }
 }
@@ -176,7 +200,7 @@ impl RegMask {
             if reg != ret && self.usedregs & regmask != 0 {
                 savemask |= regmask;
                 pad = !pad;
-                print_or_die!(output, "push {}", reg.to_str());
+                print_or_die!(output, "push {}", reg.to_str(&Type::U64));
             }
         }
         // Make sure stack alingment is preserved
@@ -205,7 +229,7 @@ impl RegMask {
         for reg in CALLER_SAVED.iter().rev() {
             let regmask = *reg as u16;
             if savemask & regmask != 0 {
-                print_or_die!(output, "pop {}", reg.to_str());
+                print_or_die!(output, "pop {}", reg.to_str(&Type::U64));
             }
         }
 
@@ -226,45 +250,53 @@ struct FuncCtx {
 #[derive(Clone)]
 enum LVal {
     // Value is stored on the stack
-    Stack(usize),
+    Stack(Type, usize),
     // Value is stored in static storage
-    Static(Rc<str>, usize),
+    Static(Type, Rc<str>, usize),
     // Dereference of a pointer
-    Deref(Box<Val>, usize),
+    Deref(Type, Box<Val>, usize),
 }
 
 impl LVal {
-    // Create a new lvalue at an offset from the current one
-    fn with_offset(self, add: usize) -> LVal {
+    fn get_type(&self) -> &Type {
         match self {
-            LVal::Stack(o) => LVal::Stack(o + add),
-            LVal::Static(name, o) => LVal::Static(name, o + add),
-            LVal::Deref(ptr, o) => LVal::Deref(ptr, o + add),
+            LVal::Stack(dtype, _) => dtype,
+            LVal::Static(dtype, _, _) => dtype,
+            LVal::Deref(dtype, _, _) => dtype,
+        }
+    }
+
+    // Create a new lvalue at an offset from the current one
+    fn with_type_offset(self, dtype: Type, offset: usize) -> LVal {
+        match self {
+            LVal::Stack(_, o)        => LVal::Stack(dtype, o + offset),
+            LVal::Static(_, name, o) => LVal::Static(dtype, name, o + offset),
+            LVal::Deref(_, ptr, o)   => LVal::Deref(dtype, ptr, o + offset),
         }
     }
 
     // Create an rvalue from this lvalue
     fn to_rval<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> RVal {
         match self {
-            LVal::Stack(offset) => {
+            LVal::Stack(dtype, offset) => {
                 let dreg = fctx.regmask.alloc_reg().unwrap();
                 print_or_die!(output, "mov {}, [rbp - {}]",
-                                        dreg.to_str(), fctx.frame_size - offset);
-                RVal::Reg(dreg)
+                                        dreg.to_str(&dtype), fctx.frame_size - offset);
+                RVal::Reg(dtype, dreg)
             },
-            LVal::Static(name, offset) => {
+            LVal::Static(dtype, name, offset) => {
                 let dreg = fctx.regmask.alloc_reg().unwrap();
                 print_or_die!(output, "mov {}, [{} + {}]",
-                                        dreg.to_str(), name, offset);
-                RVal::Reg(dreg)
+                                        dreg.to_str(&dtype), name, offset);
+                RVal::Reg(dtype, dreg)
             },
-            LVal::Deref(ptr, offset) => {
+            LVal::Deref(dtype, ptr, offset) => {
                 // Store pointer value in a register
                 let dreg = ptr.as_rval(fctx, output).to_reg(fctx, output);
                 // Perform the dereference
                 print_or_die!(output, "mov {}, [{} + {}]",
-                                        dreg.to_str(), dreg.to_str(), offset);
-                RVal::Reg(dreg)
+                                        dreg.to_str(&dtype), dreg.to_str(&Type::U64), offset);
+                RVal::Reg(dtype, dreg)
             },
         }
     }
@@ -272,27 +304,30 @@ impl LVal {
     // Create an rvalue pointer to this lvalue
     fn to_ptr<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> RVal {
         match self {
-            LVal::Stack(offset) => {
+            LVal::Stack(dtype, offset) => {
                 let dreg = fctx.regmask.alloc_reg().unwrap();
                 print_or_die!(output, "lea {}, [rbp - {}]",
-                                        dreg.to_str(), fctx.frame_size - offset);
-                RVal::Reg(dreg)
+                                        dreg.to_str(&Type::U64), fctx.frame_size - offset);
+                RVal::Reg(Type::Ptr { base_type: Box::from(dtype) }, dreg)
             },
-            LVal::Static(name, offset) => {
+            LVal::Static(dtype, name, offset) => {
                 let dreg = fctx.regmask.alloc_reg().unwrap();
                 print_or_die!(output, "lea {}, [{} + {}]",
-                                        dreg.to_str(), name, offset);
-                RVal::Reg(dreg)
+                                        dreg.to_str(&Type::U64), name, offset);
+                RVal::Reg(Type::Ptr { base_type: Box::from(dtype) }, dreg)
             },
-            LVal::Deref(ptr, offset) => {
-                // Store pointer value in a register
-                let dreg = ptr.as_rval(fctx, output).to_reg(fctx, output);
-                // Add offset to pointer if required
+            LVal::Deref(dtype, ptr, offset) => {
                 if offset > 0 {
+                    // Add offset to pointer if required
+                    let dreg = ptr.as_rval(fctx, output).to_reg(fctx, output);
                     print_or_die!(output, "lea {}, [{} + {}]",
-                                    dreg.to_str(), dreg.to_str(), offset);
+                                    dreg.to_str(&Type::U64),
+                                    dreg.to_str(&Type::U64),
+                                    offset);
+                    RVal::Reg(Type::Ptr { base_type: Box::from(dtype) }, dreg)
+                } else {
+                    ptr.as_rval(fctx, output)
                 }
-                RVal::Reg(dreg)
             },
         }
     }
@@ -302,29 +337,34 @@ impl LVal {
 #[derive(Clone)]
 enum RVal {
     // Immediate integer value
-    Immed(usize),
+    Immed(Type, usize),
     // Integer (or pointer) value in a register
-    Reg(Reg),
+    Reg(Type, Reg),
 }
 
 impl RVal {
+    fn get_type(&self) -> &Type {
+        match self {
+            RVal::Immed(dtype, _) => dtype,
+            RVal::Reg(dtype, _,) => dtype,
+        }
+    }
+
     fn to_reg<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> Reg {
         match self {
-            RVal::Immed(val) => {
+            RVal::Immed(dtype, val) => {
                 let dreg = fctx.regmask.alloc_reg().unwrap();
-                print_or_die!(output, "mov {}, {}", dreg.to_str(), val);
+                print_or_die!(output, "mov {}, {}", dreg.to_str(&dtype), val);
                 dreg
             },
-            RVal::Reg(reg) => {
-                reg
-            },
+            RVal::Reg(_, reg) => reg,
         }
     }
 
     fn to_string(&self) -> String {
         match self {
-            RVal::Immed(val) => format!("{}", val),
-            RVal::Reg(reg) => String::from(reg.to_str()),
+            RVal::Immed(_, val) => format!("{}", val),
+            RVal::Reg(dtype, reg) => String::from(reg.to_str(&dtype)),
         }
     }
 }
@@ -338,6 +378,13 @@ enum Val {
 }
 
 impl Val {
+    fn get_type(&self) -> &Type {
+        match self {
+            Val::LVal(lval) => lval.get_type(),
+            Val::RVal(rval) => rval.get_type(),
+        }
+    }
+
     fn as_rval<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> RVal {
         match self {
             Val::LVal(lval) => lval.to_rval(fctx, output),
@@ -348,11 +395,11 @@ impl Val {
     fn discard(self, fctx: &mut FuncCtx) {
         match self {
             Val::RVal(rval) => match rval {
-                RVal::Reg(reg) => fctx.regmask.clear_reg(reg),
+                RVal::Reg(_, reg) => fctx.regmask.clear_reg(reg),
                 _ => (),
             },
             Val::LVal(lval) => match lval {
-                LVal::Deref(ptr, _) => ptr.discard(fctx),
+                LVal::Deref(_, ptr, _) => ptr.discard(fctx),
                 _ => (),
             },
         }
@@ -363,53 +410,51 @@ fn gen_expr<T: std::io::Write>(
         file: &File,
         fctx: &mut FuncCtx,
         in_expr: &Expr,
-        output: &mut T) -> (Type, Val) {
+        output: &mut T) -> Val {
 
     match in_expr {
-        Expr::Const(dtype, val)  => (dtype.clone(), Val::RVal(RVal::Immed(*val))),
+        Expr::Const(dtype, val) => Val::RVal(RVal::Immed(dtype.clone(), *val)),
 
         Expr::Ident(ident) => {
             if let Some((dtype, offset)) = fctx.locals.get(ident) {
-                (dtype.clone(), Val::LVal(LVal::Stack(*offset)))
+                Val::LVal(LVal::Stack(dtype.clone(), *offset))
             } else if let Some(s) = file.statics.get(ident) {
-                (s.dtype.clone(), Val::LVal(LVal::Static(ident.clone(), 0)))
+                Val::LVal(LVal::Static(s.dtype.clone(), ident.clone(), 0))
             } else {
                 panic!("Unknown identifier {}", ident);
             }
         },
 
-        Expr::Ref(expr) => {
-            let (src_type, src_lval) = gen_lval_expr(file, fctx, expr, output);
-            (Type::Ptr { base_type: Box::from(src_type.clone()) },
-                Val::RVal(src_lval.to_ptr(fctx, output)))
-        },
+        Expr::Ref(expr) =>
+            Val::RVal(gen_lval_expr(file, fctx, expr, output).to_ptr(fctx, output)),
 
         Expr::Deref(expr) => {
-            let (src_type, src_val) = gen_expr(file, fctx, expr, output);
-            match src_type {
+            let src = gen_expr(file, fctx, expr, output);
+            match src.get_type() {
                 // Create dereferenced value from pointer
                 Type::Ptr { base_type } =>
-                    ((*base_type).clone(), Val::LVal(LVal::Deref(Box::from(src_val), 0))),
+                    Val::LVal(LVal::Deref((**base_type).clone(), Box::from(src), 0)),
                 // Create new value with the array's element type at the same location
                 // (offset was already added to the array's value if this deref was
                 // de-sugared from array indexing)
-                Type::Array { elem_type, .. } =>
-                    ((*elem_type).clone(), src_val),
+                // Type::Array { elem_type, .. } =>
+                //     ((*elem_type).clone(), src_val),
                 _ => panic!("Can't dereference non-reference type"),
             }
         }
 
         Expr::Field(expr, ident) => {
-            let (src_type, src_lval) = gen_lval_expr(file, fctx, expr, output);
-            match src_type {
-                Type::Record(record) => {
-                    if let Some((field_type, field_offset)) = record.fields.get(ident) {
-                        (field_type.clone(), Val::LVal(src_lval.with_offset(*field_offset)))
-                    } else {
-                        panic!("Non-existent field {} accessed", ident);
-                    }
-                },
+            let src = gen_lval_expr(file, fctx, expr, output);
+
+            let record = match src.get_type() {
+                Type::Record(record) => record.clone(),
                 _ => panic!("Can't access field of non-record type"),
+            };
+
+            if let Some((field_type, field_offset)) = record.fields.get(ident) {
+                Val::LVal(src.with_type_offset(field_type.clone(), *field_offset))
+            } else {
+                panic!("Non-existent field {} accessed", ident);
             }
         },
 
@@ -438,18 +483,15 @@ fn gen_expr<T: std::io::Write>(
             for (i, param) in params.iter().enumerate() {
                 let param_reg = fctx.regmask.
                     really_alloc_specific_reg(PARAM_REGS[i]).unwrap();
-
-                let (_, param_val) = gen_expr(file, fctx, param, output);
-
-                match param_val.as_rval(fctx, output) {
-                    RVal::Immed(val) => {
+                match gen_rval_expr(file, fctx, param, output) {
+                    RVal::Immed(dtype, val) => {
                         print_or_die!(output, "mov {}, {}",
-                            param_reg.to_str(), val);
+                            param_reg.to_str(&dtype), val);
                     },
-                    RVal::Reg(reg) => {
+                    RVal::Reg(dtype, reg) => {
                         if param_reg != reg {
                             print_or_die!(output, "mov {}, {}",
-                                param_reg.to_str(), reg.to_str());
+                                param_reg.to_str(&dtype), reg.to_str(&dtype));
                             fctx.regmask.clear_reg(reg);
                         }
                     },
@@ -465,7 +507,7 @@ fn gen_expr<T: std::io::Write>(
 
             // Move return value to result register
             if dreg != Reg::Rax {
-                print_or_die!(output, "mov {}, rax", dreg.to_str());
+                print_or_die!(output, "mov {}, rax", dreg.to_str(&func.rettype));
                 fctx.regmask.clear_reg(Reg::Rax);
             }
             // Clear param clobbers
@@ -476,66 +518,58 @@ fn gen_expr<T: std::io::Write>(
             // Restore caller-saved registers
             fctx.regmask.popcallersaved(savemask, pad, output);
 
-            (func.rettype.clone(), Val::RVal(RVal::Reg(dreg)))
+            Val::RVal(RVal::Reg(func.rettype.clone(), dreg))
         },
 
         Expr::Inv(expr) => {
-            let (dtype, src) = gen_rval_expr(file, fctx, expr, output);
-            if let RVal::Reg(reg) = src {
-                print_or_die!(output, "not {}", reg.to_str());
-                (dtype, Val::RVal(RVal::Reg(reg)))
+            let src = gen_rval_expr(file, fctx, expr, output);
+            if let RVal::Reg(dtype, reg) = &src {
+                print_or_die!(output, "not {}", reg.to_str(&dtype));
+                Val::RVal(src)
             } else {
                 unreachable!()
             }
         },
 
         Expr::Neg(expr) => {
-            let (dtype, src) = gen_rval_expr(file, fctx, expr, output);
-            if let RVal::Reg(reg) = src {
-                print_or_die!(output, "neg {}", reg.to_str());
-                (dtype, Val::RVal(RVal::Reg(reg)))
+            let src = gen_rval_expr(file, fctx, expr, output);
+            if let RVal::Reg(dtype, reg) = &src {
+                print_or_die!(output, "neg {}", reg.to_str(&dtype));
+                Val::RVal(src)
             } else {
                 unreachable!()
             }
         },
 
         Expr::Add(lhs, rhs) => {
-            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
-            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
-            if lhs_type != rhs_type {
-                panic!("Add type mismatch, left: {:?}, right: {:?}",
-                         lhs_type, rhs_type);
+            let lhs = gen_rval_expr(file, fctx, lhs, output);
+            let rhs = gen_rval_expr(file, fctx, rhs, output);
+            if lhs.get_type() != rhs.get_type() {
+                panic!("Type mismatch, left: {:?}, right: {:?}", lhs.get_type(), rhs.get_type());
             }
-
-            if let RVal::Reg(reg) = lhs_val {
-                print_or_die!(output, "add {}, {}",
-                    reg.to_str(), rhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
-            } else if let RVal::Reg(reg) = rhs_val {
-                print_or_die!(output, "add {}, {}",
-                    reg.to_str(), lhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            if let RVal::Reg(dtype, reg) = &lhs {
+                print_or_die!(output, "add {}, {}", reg.to_str(&dtype), rhs.to_string());
+                Val::RVal(lhs)
+            } else if let RVal::Reg(dtype, reg) = &rhs {
+                print_or_die!(output, "add {}, {}", reg.to_str(&dtype), lhs.to_string());
+                Val::RVal(rhs)
             } else {
                 unreachable!();
             }
         },
 
         Expr::Sub(lhs, rhs) => {
-            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
-            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
-            if lhs_type != rhs_type {
-                panic!("Sub type mismatch, left: {:?}, right: {:?}",
-                         lhs_type, rhs_type);
+            let lhs = gen_rval_expr(file, fctx, lhs, output);
+            let rhs = gen_rval_expr(file, fctx, rhs, output);
+            if lhs.get_type() != rhs.get_type() {
+                panic!("Type mismatch, left: {:?}, right: {:?}", lhs.get_type(), rhs.get_type());
             }
-
-            if let RVal::Reg(reg) = lhs_val {
-                print_or_die!(output, "sub {}, {}",
-                    reg.to_str(), rhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
-            } else if let RVal::Reg(reg) = rhs_val {
-                print_or_die!(output, "sub {}, {}",
-                    reg.to_str(), lhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            if let RVal::Reg(dtype, reg) = &lhs {
+                print_or_die!(output, "sub {}, {}", reg.to_str(&dtype), rhs.to_string());
+                Val::RVal(lhs)
+            } else if let RVal::Reg(dtype, reg) = &rhs {
+                print_or_die!(output, "sub {}, {}", reg.to_str(&dtype), lhs.to_string());
+                Val::RVal(rhs)
             } else {
                 unreachable!();
             }
@@ -554,63 +588,51 @@ fn gen_expr<T: std::io::Write>(
         },
 
         Expr::Or(lhs, rhs) => {
-            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
-            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
-            if lhs_type != rhs_type {
-                panic!("Or type mismatch, left: {:?}, right: {:?}",
-                         lhs_type, rhs_type);
+            let lhs = gen_rval_expr(file, fctx, lhs, output);
+            let rhs = gen_rval_expr(file, fctx, rhs, output);
+            if lhs.get_type() != rhs.get_type() {
+                panic!("Type mismatch, left: {:?}, right: {:?}", lhs.get_type(), rhs.get_type());
             }
-
-            if let RVal::Reg(reg) = lhs_val {
-                print_or_die!(output, "or {}, {}",
-                    reg.to_str(), rhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
-            } else if let RVal::Reg(reg) = rhs_val {
-                print_or_die!(output, "or {}, {}",
-                    reg.to_str(), lhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            if let RVal::Reg(dtype, reg) = &lhs {
+                print_or_die!(output, "or {}, {}", reg.to_str(&dtype), rhs.to_string());
+                Val::RVal(lhs)
+            } else if let RVal::Reg(dtype, reg) = &rhs {
+                print_or_die!(output, "or {}, {}", reg.to_str(&dtype), lhs.to_string());
+                Val::RVal(rhs)
             } else {
                 unreachable!();
             }
         },
 
         Expr::And(lhs, rhs) => {
-            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
-            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
-            if lhs_type != rhs_type {
-                panic!("And type mismatch, left: {:?}, right: {:?}",
-                         lhs_type, rhs_type);
+            let lhs = gen_rval_expr(file, fctx, lhs, output);
+            let rhs = gen_rval_expr(file, fctx, rhs, output);
+            if lhs.get_type() != rhs.get_type() {
+                panic!("Type mismatch, left: {:?}, right: {:?}", lhs.get_type(), rhs.get_type());
             }
-
-            if let RVal::Reg(reg) = lhs_val {
-                print_or_die!(output, "and {}, {}",
-                    reg.to_str(), rhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
-            } else if let RVal::Reg(reg) = rhs_val {
-                print_or_die!(output, "and {}, {}",
-                    reg.to_str(), lhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            if let RVal::Reg(dtype, reg) = &lhs {
+                print_or_die!(output, "and {}, {}", reg.to_str(&dtype), rhs.to_string());
+                Val::RVal(lhs)
+            } else if let RVal::Reg(dtype, reg) = &rhs {
+                print_or_die!(output, "and {}, {}", reg.to_str(&dtype), lhs.to_string());
+                Val::RVal(rhs)
             } else {
                 unreachable!();
             }
         },
 
         Expr::Xor(lhs, rhs) => {
-            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
-            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
-            if lhs_type != rhs_type {
-                panic!("Xor type mismatch, left: {:?}, right: {:?}",
-                         lhs_type, rhs_type);
+            let lhs = gen_rval_expr(file, fctx, lhs, output);
+            let rhs = gen_rval_expr(file, fctx, rhs, output);
+            if lhs.get_type() != rhs.get_type() {
+                panic!("Type mismatch, left: {:?}, right: {:?}", lhs.get_type(), rhs.get_type());
             }
-
-            if let RVal::Reg(reg) = lhs_val {
-                print_or_die!(output, "xor {}, {}",
-                    reg.to_str(), rhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
-            } else if let RVal::Reg(reg) = rhs_val {
-                print_or_die!(output, "xor {}, {}",
-                    reg.to_str(), lhs_val.to_string());
-                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            if let RVal::Reg(dtype, reg) = &lhs {
+                print_or_die!(output, "xor {}, {}", reg.to_str(&dtype), rhs.to_string());
+                Val::RVal(lhs)
+            } else if let RVal::Reg(dtype, reg) = &rhs {
+                print_or_die!(output, "xor {}, {}", reg.to_str(&dtype), lhs.to_string());
+                Val::RVal(rhs)
             } else {
                 unreachable!();
             }
@@ -625,8 +647,9 @@ fn gen_expr<T: std::io::Write>(
         },
 
         Expr::Cast(expr, dtype) => {
-            let (_, src_val) = gen_expr(file, fctx, expr, output);
-            (dtype.clone(), src_val)
+            todo!("cast")
+            // let src = gen_expr(file, fctx, expr, output);
+            // (dtype.clone(), src_val)
         },
     }
 }
@@ -635,12 +658,11 @@ fn gen_rval_expr<T: std::io::Write>(
         file: &File,
         fctx: &mut FuncCtx,
         in_expr: &Expr,
-        output: &mut T) -> (Type, RVal) {
+        output: &mut T) -> RVal {
 
-    let (dtype, val) = gen_expr(file, fctx, in_expr, output);
-    match val {
-        Val::LVal(lval) => (dtype, lval.to_rval(fctx, output)),
-        Val::RVal(rval) => (dtype, rval),
+    match gen_expr(file, fctx, in_expr, output) {
+        Val::LVal(lval) => lval.to_rval(fctx, output),
+        Val::RVal(rval) => rval,
     }
 }
 
@@ -648,30 +670,44 @@ fn gen_lval_expr<T: std::io::Write>(
         file: &File,
         fctx: &mut FuncCtx,
         in_expr: &Expr,
-        output: &mut T) -> (Type, LVal) {
+        output: &mut T) -> LVal {
 
-    let (dtype, val) = gen_expr(file, fctx, in_expr, output);
-    match val {
-        Val::LVal(lval) => (dtype, lval),
+    match gen_expr(file, fctx, in_expr, output) {
+        Val::LVal(lval) => lval,
         _ => panic!("Expected lvalue expression!"),
+    }
+}
+
+fn memwidth(dtype: &Type) -> &str {
+    match dtype {
+        Type::U8  => "byte",
+        Type::I8  => "byte",
+        Type::U16 => "word",
+        Type::I16 => "word",
+        Type::U32 => "dword",
+        Type::I32 => "dword",
+        Type::U64 => "qword",
+        Type::I64 => "qword",
+        Type::Ptr {..} => "qword",
+        _ => unreachable!(),
     }
 }
 
 fn gen_set<T: std::io::Write>(dest: LVal, src: RVal, fctx: &mut FuncCtx, output: &mut T) {
     // Write source value to destination
     match dest {
-        LVal::Stack(offset) => {
-            print_or_die!(output, "mov qword [rbp - {}], {}",
-                                    fctx.frame_size - offset, src.to_string());
+        LVal::Stack(dtype, offset) => {
+            print_or_die!(output, "mov {} [rbp - {}], {}",
+                                    memwidth(&dtype), fctx.frame_size - offset, src.to_string());
         },
-        LVal::Static(name, offset) => {
-            print_or_die!(output, "mov qword [{} + {}], {}",
-                                    name, offset, src.to_string());
+        LVal::Static(dtype, name, offset) => {
+            print_or_die!(output, "mov {} [{} + {}], {}",
+                                    memwidth(&dtype), name, offset, src.to_string());
         },
-        LVal::Deref(ptr, offset) => {
+        LVal::Deref(dtype, ptr, offset) => {
             let ptr_rval = ptr.as_rval(fctx, output);
-            print_or_die!(output, "mov qword [{} + {}], {}",
-                                    ptr_rval.to_string(), offset, src.to_string());
+            print_or_die!(output, "mov {} [{} + {}], {}",
+                                    memwidth(&dtype), ptr_rval.to_string(), offset, src.to_string());
         },
     }
 
@@ -681,13 +717,12 @@ fn gen_set<T: std::io::Write>(dest: LVal, src: RVal, fctx: &mut FuncCtx, output:
 
 fn gen_init<T: std::io::Write>(
         dest: LVal,
-        dest_type: &Type,
         init: &Init,
         file: &File,
         fctx: &mut FuncCtx,
         output: &mut T) {
 
-    match dest_type {
+    match dest.get_type() {
         Type::VOID => panic!("Initializer for void!"),
         Type::Array { elem_type, elem_count } => {
             let init_list = init.want_list();
@@ -695,21 +730,22 @@ fn gen_init<T: std::io::Write>(
                 panic!("Invalid array initializer!");
             }
             for (i, elem_init) in init_list.iter().enumerate() {
-                gen_init(dest.clone().with_offset(i * elem_type.get_size()),
-                    elem_type, elem_init, file, fctx, output);
+                gen_init(
+                    dest.clone().with_type_offset((**elem_type).clone(),
+                                                    i * elem_type.get_size()),
+                    elem_init, file, fctx, output);
             }
         },
         Type::Record(record) => {
             let init_list = init.want_list();
             for (i, (_, (field_type, field_offset))) in record.fields.iter().enumerate() {
-                gen_init(dest.clone().with_offset(*field_offset),
-                    field_type, &init_list[i], file, fctx, output);
+                gen_init(dest.clone().with_type_offset(field_type.clone(), *field_offset),
+                    &init_list[i], file, fctx, output);
             }
         },
         _ => { // Integer/pointer types
-            let (_, val) = gen_expr(file, fctx, init.want_expr(), output);
-            let rval = val.as_rval(fctx, output);
-            gen_set(dest, rval, fctx, output);
+            let src = gen_rval_expr(file, fctx, init.want_expr(), output);
+            gen_set(dest, src, fctx, output);
         },
     }
 }
@@ -768,12 +804,14 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
 
     // Move parameters from registers to stack
     for (i, (name, _)) in func.params.iter().enumerate() {
-        let (_, offset) = ctx.locals.get(name).unwrap();
+        let (dtype, offset) = ctx.locals.get(name).unwrap();
         // FIXME1: support more than 6 parameters
         // FIXME2: register allocator breaks if we don't first set the
         //         param register to be clobbered (gen_set will clear it)
         ctx.regmask.usedregs |= PARAM_REGS[i] as u16;
-        gen_set(LVal::Stack(*offset), RVal::Reg(PARAM_REGS[i]), &mut ctx, output);
+        gen_set(LVal::Stack(dtype.clone(), *offset),
+                RVal::Reg(dtype.clone(), PARAM_REGS[i]),
+                &mut ctx, output);
     }
 
     for stmt in &func.stmts {
@@ -784,69 +822,67 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
             Stmt::Auto(ident, dtype, init) => {
                 if let Some(init) = init {
                     let (_, offset) = ctx.locals.get(ident).unwrap();
-                    gen_init(LVal::Stack(*offset), dtype, init,
+                    gen_init(LVal::Stack(dtype.clone(), *offset), init,
                         &file, &mut ctx, output);
                 }
             },
             Stmt::Set(dest, expr) => {
-                let (dest_type, dest) = gen_lval_expr(file, &mut ctx, dest, output);
-                let (src_type, src) = gen_expr(file, &mut ctx, expr, output);
-                if dest_type != src_type {
-                    panic!("Set statement types differ, left: {:?}, right: {:?}", dest_type, src_type);
+                let dest = gen_lval_expr(file, &mut ctx, dest, output);
+                let src = gen_rval_expr(file, &mut ctx, expr, output);
+                if dest.get_type() != src.get_type() {
+                    panic!("Set statement types differ, left: {:?}, right: {:?}",
+                            dest.get_type(), src.get_type());
                 }
-                let src_rval = src.as_rval(&mut ctx, output);
-                gen_set(dest, src_rval, &mut ctx, output);
+                gen_set(dest, src, &mut ctx, output);
             }
             Stmt::Eval(ref expr) => {
-                let (_, val) = gen_expr(file, &mut ctx, expr, output);
-                val.discard(&mut ctx);
+                gen_expr(file, &mut ctx, expr, output).discard(&mut ctx);
             },
             Stmt::Jmp(label) => {
                 print_or_die!(output, "jmp .{}", label);
             },
             Stmt::Ret(maybe_expr) => {
                 if let Some(expr) = maybe_expr {
-                    let (_, val) = gen_expr(file, &mut ctx, expr, output);
-                    let rval = val.as_rval(&mut ctx, output);
-                    gen_ret(rval, &mut ctx, output);
+                    let retval = gen_rval_expr(file, &mut ctx, expr, output);
+                    gen_ret(retval, &mut ctx, output);
                 }
                 print_or_die!(output, "jmp .done");
             },
             Stmt::Jeq(label, expr1, expr2) => {
-                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
-                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                let val1 = gen_expr(file, &mut ctx, expr1, output);
+                let val2 = gen_expr(file, &mut ctx, expr2, output);
                 gen_jcc(val1.as_rval(&mut ctx, output),
                         val2.as_rval(&mut ctx, output),
                         &mut ctx, output);
                 print_or_die!(output, "je .{}", label);
             },
             Stmt::Jl(label, expr1, expr2) => {
-                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
-                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                let val1 = gen_expr(file, &mut ctx, expr1, output);
+                let val2 = gen_expr(file, &mut ctx, expr2, output);
                 gen_jcc(val1.as_rval(&mut ctx, output),
                         val2.as_rval(&mut ctx, output),
                         &mut ctx, output);
                 print_or_die!(output, "jl .{}", label);
             },
             Stmt::Jle(label, expr1, expr2) => {
-                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
-                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                let val1 = gen_expr(file, &mut ctx, expr1, output);
+                let val2 = gen_expr(file, &mut ctx, expr2, output);
                 gen_jcc(val1.as_rval(&mut ctx, output),
                         val2.as_rval(&mut ctx, output),
                         &mut ctx, output);
                 print_or_die!(output, "jle .{}", label);
             },
             Stmt::Jg(label, expr1, expr2) => {
-                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
-                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                let val1 = gen_expr(file, &mut ctx, expr1, output);
+                let val2 = gen_expr(file, &mut ctx, expr2, output);
                 gen_jcc(val1.as_rval(&mut ctx, output),
                         val2.as_rval(&mut ctx, output),
                         &mut ctx, output);
                 print_or_die!(output, "jg .{}", label);
             },
             Stmt::Jge(label, expr1, expr2) => {
-                let (_, val1) = gen_expr(file, &mut ctx, expr1, output);
-                let (_, val2) = gen_expr(file, &mut ctx, expr2, output);
+                let val1 = gen_expr(file, &mut ctx, expr1, output);
+                let val2 = gen_expr(file, &mut ctx, expr2, output);
                 gen_jcc(val1.as_rval(&mut ctx, output),
                         val2.as_rval(&mut ctx, output),
                         &mut ctx, output);
