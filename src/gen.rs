@@ -20,14 +20,22 @@ fn gen_static_init<T: std::io::Write>(file: &File, init: &Init, output: &mut T) 
     match init {
         Init::Base(expr) => {
             match expr {
-                Expr::U8(v)  => { print_or_die!(output, "db {}", v); },
-                Expr::I8(v)  => { print_or_die!(output, "db {}", v); },
-                Expr::U16(v) => { print_or_die!(output, "dw {}", v); },
-                Expr::I16(v) => { print_or_die!(output, "dw {}", v); },
-                Expr::U32(v) => { print_or_die!(output, "dd {}", v); },
-                Expr::I32(v) => { print_or_die!(output, "dd {}", v); },
-                Expr::U64(v) => { print_or_die!(output, "dq {}", v); },
-                Expr::I64(v) => { print_or_die!(output, "dq {}", v); },
+                Expr::Const(dtype, v) => {
+                    match dtype {
+                        Type::U8  => { print_or_die!(output, "db {}", v); },
+                        Type::I8  => { print_or_die!(output, "db {}", v); },
+                        Type::U16 => { print_or_die!(output, "dw {}", v); },
+                        Type::I16 => { print_or_die!(output, "dw {}", v); },
+                        Type::U32 => { print_or_die!(output, "dd {}", v); },
+                        Type::I32 => { print_or_die!(output, "dd {}", v); },
+                        Type::U64 => { print_or_die!(output, "dq {}", v); },
+                        Type::I64 => { print_or_die!(output, "dq {}", v); },
+                        Type::Ptr {..} => { print_or_die!(output, "dq {}", v); },
+                        // Constants can't possibly have other types
+                        _ => unreachable!(),
+                    }
+                },
+
                 // Static can be initialized by another static
                 Expr::Ident(ident) => {
                     if let Some(ref s) = file.statics.get(ident) {
@@ -358,14 +366,7 @@ fn gen_expr<T: std::io::Write>(
         output: &mut T) -> (Type, Val) {
 
     match in_expr {
-        Expr::U8(v)  => (Type::U8, Val::RVal(RVal::Immed(*v as usize))),
-        Expr::I8(v)  => (Type::I8, Val::RVal(RVal::Immed(*v as usize))),
-        Expr::U16(v) => (Type::U16, Val::RVal(RVal::Immed(*v as usize))),
-        Expr::I16(v) => (Type::I16, Val::RVal(RVal::Immed(*v as usize))),
-        Expr::U32(v) => (Type::U32, Val::RVal(RVal::Immed(*v as usize))),
-        Expr::I32(v) => (Type::I32, Val::RVal(RVal::Immed(*v as usize))),
-        Expr::U64(v) => (Type::U64, Val::RVal(RVal::Immed(*v as usize))),
-        Expr::I64(v) => (Type::I64, Val::RVal(RVal::Immed(*v as usize))),
+        Expr::Const(dtype, val)  => (dtype.clone(), Val::RVal(RVal::Immed(*val))),
 
         Expr::Ident(ident) => {
             if let Some((dtype, offset)) = fctx.locals.get(ident) {

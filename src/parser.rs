@@ -68,9 +68,9 @@ impl<'source> Parser<'source> {
         // Create NUL-terminated initializer for the string
         let mut list = Vec::new();
         for b in data.as_bytes() {
-            list.push(Init::Base(Expr::U8(*b)));
+            list.push(Init::Base(Expr::Const(Type::U8, *b as usize)));
         }
-        list.push(Init::Base(Expr::U8(0)));
+        list.push(Init::Base(Expr::Const(Type::U8, 0)));
 
         // Create static variable for it
         self.file.statics.insert(name.clone(),
@@ -145,22 +145,13 @@ impl<'source> Parser<'source> {
                 expr
             },
             Token::Str(s) => {
+                let string_type = self.want_type_suffix();
                 // String literal becomes a pointer to a static
-                let r#type = self.want_type_suffix();
-                Expr::Ref(Box::from(Expr::Ident(self.make_string_lit(r#type, s))))
+                Expr::Ref(Box::from(
+                    Expr::Ident(self.make_string_lit(string_type, s))))
             },
             Token::Ident(s) => Expr::Ident(s),
-            Token::Constant(val) => match self.want_type_suffix() {
-                Type::U8    => Expr::U8(val as u8),
-                Type::I8    => Expr::I8(val as i8),
-                Type::U16   => Expr::U16(val as u16),
-                Type::I16   => Expr::I16(val as i16),
-                Type::U32   => Expr::U32(val as u32),
-                Type::I32   => Expr::I32(val as i32),
-                Type::U64   => Expr::U64(val as u64),
-                Type::I64   => Expr::I64(val as i64),
-                _ => unreachable!(),
-            },
+            Token::Constant(val) => Expr::Const(self.want_type_suffix(), val),
             _ => panic!("Invalid constant value!"),
         }
     }
@@ -194,9 +185,9 @@ impl<'source> Parser<'source> {
 
     fn want_unary(&mut self) -> Expr {
         if maybe_want!(self, Token::Sub) {
-            Expr::Neg(Box::from(self.want_unary()))
+            self.want_unary().make_neg()
         } else if maybe_want!(self, Token::Tilde) {
-            Expr::Inv(Box::from(self.want_unary()))
+            self.want_unary().make_inv()
         } else if maybe_want!(self, Token::Mul) {
             Expr::Deref(Box::from(self.want_unary()))
         } else if maybe_want!(self, Token::And) {
@@ -209,73 +200,73 @@ impl<'source> Parser<'source> {
     }
 
     fn want_cast(&mut self) -> Expr {
-        let expr1 = self.want_unary();
+        let expr = self.want_unary();
         if maybe_want!(self, Token::Cast) {
-            Expr::Cast(Box::from(expr1), self.want_type())
+            expr.make_cast(self.want_type())
         } else {
-            expr1
+            expr
         }
     }
 
     fn want_mul(&mut self) -> Expr {
-        let expr1 = self.want_cast();
+        let expr = self.want_cast();
         if maybe_want!(self, Token::Mul) {
-            Expr::Mul(Box::from(expr1), Box::from(self.want_mul()))
+            expr.make_mul(self.want_mul())
         } else if maybe_want!(self, Token::Div) {
-            Expr::Div(Box::from(expr1), Box::from(self.want_mul()))
+            expr.make_div(self.want_mul())
         } else if maybe_want!(self, Token::Rem) {
-            Expr::Rem(Box::from(expr1), Box::from(self.want_mul()))
+            expr.make_rem(self.want_mul())
         } else {
-            expr1
+            expr
         }
     }
 
     fn want_add(&mut self) -> Expr {
-        let expr1 = self.want_mul();
+        let expr = self.want_mul();
         if maybe_want!(self, Token::Add) {
-            Expr::Add(Box::from(expr1), Box::from(self.want_add()))
+            expr.make_add(self.want_add())
         } else if maybe_want!(self, Token::Sub) {
-            Expr::Sub(Box::from(expr1), Box::from(self.want_add()))
+            expr.make_sub(self.want_add())
         } else {
-            expr1
+            expr
         }
     }
 
     fn want_shift(&mut self) -> Expr {
-        let expr1 = self.want_add();
+        let expr = self.want_add();
         if maybe_want!(self, Token::Lsh) {
-            Expr::Lsh(Box::from(expr1), Box::from(self.want_shift()))
+            expr.make_lsh(self.want_shift())
         } else if maybe_want!(self, Token::Rsh) {
-            Expr::Rsh(Box::from(expr1), Box::from(self.want_shift()))
+            expr.make_rsh(self.want_shift())
         } else {
-            expr1
+            expr
         }
     }
 
     fn want_and(&mut self) -> Expr {
-        let expr1 = self.want_shift();
+        let expr = self.want_shift();
         if maybe_want!(self, Token::And) {
-            Expr::And(Box::from(expr1), Box::from(self.want_and()))
+            expr.make_and(self.want_and())
         } else {
-            expr1
+            expr
         }
     }
 
     fn want_xor(&mut self) -> Expr {
-        let expr1 = self.want_and();
+        let expr = self.want_and();
         if maybe_want!(self, Token::Xor) {
-            Expr::Xor(Box::from(expr1), Box::from(self.want_xor()))
+            expr.make_xor(self.want_xor())
         } else {
-            expr1
+            expr
         }
     }
 
     fn want_or(&mut self) -> Expr {
-        let expr1 = self.want_xor();
+        let expr = self.want_xor();
         if maybe_want!(self, Token::Or) {
-            Expr::Or(Box::from(expr1), Box::from(self.want_or()))
+            expr.make_or(self.want_or())
         } else {
-            expr1
+            expr
         }
     }
 
@@ -301,7 +292,10 @@ impl<'source> Parser<'source> {
                 want!(self, Token::RSq, "Expected ]");
                 Type::Array {
                     elem_type: elem_type,
-                    elem_count: elem_count_expr.eval_usize()
+                    elem_count: match elem_count_expr {
+                        Expr::Const(_, val) => val,
+                        _ => panic!("Array element count must be constnat"),
+                    }
                 }
             },
             Token::Ident(ref ident) => {

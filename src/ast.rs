@@ -38,8 +38,6 @@ pub enum Type {
     Record(Rc<Record>),
 }
 
-pub const PTR_SIZE: usize = 8;
-
 impl Type {
     pub fn get_size(&self) -> usize {
         match self {
@@ -52,7 +50,7 @@ impl Type {
             Type::I32 => 4,
             Type::U64 => 8,
             Type::I64 => 8,
-            Type::Ptr {..} => PTR_SIZE,
+            Type::Ptr {..} => 8,
             Type::Array { elem_type, elem_count } => {
                 elem_type.get_size() * elem_count
             },
@@ -68,14 +66,7 @@ impl Type {
 #[derive(Debug)]
 pub enum Expr {
     // Constant value
-    U8(u8),
-    I8(i8),
-    U16(u16),
-    I16(i16),
-    U32(u32),
-    I32(i32),
-    U64(u64),
-    I64(i64),
+    Const(Type, usize),
     // Identifier
     Ident(Rc<str>),
     // Pointer ref/deref
@@ -102,19 +93,143 @@ pub enum Expr {
     Cast(Box<Expr>, Type)
 }
 
+//
+// Constructors for expression that might be able to fold
+//
+
 impl Expr {
-    // Evaluate expression as usize
-    pub fn eval_usize(&self) -> usize {
+    pub fn make_inv(self) -> Expr {
         match self {
-            Expr::U8(v)   => *v as usize,
-            Expr::I8(v)   => *v as usize,
-            Expr::U16(v)  => *v as usize,
-            Expr::I16(v)  => *v as usize,
-            Expr::U32(v)  => *v as usize,
-            Expr::I32(v)  => *v as usize,
-            Expr::U64(v)  => *v as usize,
-            Expr::I64(v)  => *v as usize,
-            _ => panic!("Can't evaluate non-constant expression at compile time"),
+            Expr::Const(dtype, val) => Expr::Const(dtype, !val),
+            expr => Expr::Inv(Box::from(expr)),
+        }
+    }
+
+    pub fn make_neg(self) -> Expr {
+        match self {
+            Expr::Const(dtype, val) => Expr::Const(dtype, !val + 1),
+            expr => Expr::Neg(Box::from(expr)),
+        }
+    }
+
+    pub fn make_cast(self, new_type: Type) -> Expr {
+        match self {
+            Expr::Const(_, val) => Expr::Const(new_type, val),
+            expr => Expr::Cast(Box::from(expr), new_type)
+        }
+    }
+
+    pub fn make_mul(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot multiply constants with different types")
+                }
+                Expr::Const(dtype1, val1 * val2)
+            },
+            expr1 => Expr::Mul(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_div(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot divide constants with different types")
+                }
+                Expr::Const(dtype1, val1 / val2)
+            },
+            expr1 => Expr::Div(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_rem(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot calculate remainder of constants with different types")
+                }
+                Expr::Const(dtype1, val1 % val2)
+            },
+            expr1 => Expr::Rem(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_add(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot add constants with different types")
+                }
+                Expr::Const(dtype1, val1 + val2)
+            },
+            expr1 => Expr::Add(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_sub(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot substract constants with different types")
+                }
+                Expr::Const(dtype1, val1 - val2)
+            },
+            expr1 => Expr::Sub(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_lsh(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                Expr::Const(dtype1, val1 << val2)
+            },
+            expr1 => Expr::Lsh(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_rsh(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                Expr::Const(dtype1, val1 >> val2)
+            },
+            expr1 => Expr::Rsh(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_and(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot bitwise-and constants with different types")
+                }
+                Expr::Const(dtype1, val1 & val2)
+            },
+            expr1 => Expr::And(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_xor(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot bitwise-xor constants with different types")
+                }
+                Expr::Const(dtype1, val1 ^ val2)
+            },
+            expr1 => Expr::Xor(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_or(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot bitwise-xor constants with different types")
+                }
+                Expr::Const(dtype1, val1 | val2)
+            },
+            expr1 => Expr::Or(Box::from(expr1), Box::from(expr2)),
         }
     }
 }
