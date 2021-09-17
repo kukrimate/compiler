@@ -16,8 +16,10 @@ Current features:
 
 Notably missing features:
 - Any "real" optimizations (we do constant folding, and temporaries use a register allocator)
+- Pointer arithmetic (can be circumvented using casts)
 - Struct return types and arguments (struct pointers work fine)
 - Floating point math
+- Many other bugs and TODOs
 
 ## license
 GPLv2 only.

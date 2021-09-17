@@ -77,6 +77,7 @@ pub enum Expr {
     Neg(Box<Expr>),
     // Postfix expressions
     Field(Box<Expr>, Rc<str>),
+    Elem(Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     // Binary operations
     Add(Box<Expr>, Box<Expr>),

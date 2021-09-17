@@ -16,11 +16,32 @@ macro_rules! print_or_die {
     }
 }
 
-fn gen_static_init<T: std::io::Write>(file: &File, init: &Init, output: &mut T) {
-    match init {
-        Init::Base(expr) => {
-            match expr {
-                Expr::Const(dtype, v) => {
+fn gen_static_init<T: std::io::Write>(dtype: &Type, init: &Init, file: &File, output: &mut T) {
+    match dtype {
+        Type::Array { elem_type, elem_count } => {
+            let init_list = init.want_list();
+            if init_list.len() != *elem_count {
+                panic!("Invalid static array initializer");
+            }
+            for elem_init in init_list {
+                gen_static_init(elem_type, elem_init, file, output);
+            }
+        },
+
+        Type::Record(record) => {
+            for ((name, (dtype, _)), init) in record.fields.iter().zip(init.want_list()) {
+                gen_static_init(dtype, init, file, output);
+            }
+        },
+
+        _ => {
+            match init.want_expr() {
+                // Static can be initialized by a constant
+                Expr::Const(ctype, v) => {
+                    if dtype != ctype {
+                        panic!("Type mismatch for static initializer")
+                    }
+
                     match dtype {
                         Type::U8  => { print_or_die!(output, "db 0x{:X}", *v as u8); },
                         Type::I8  => { print_or_die!(output, "db 0x{:X}", *v as u8); },
@@ -31,19 +52,20 @@ fn gen_static_init<T: std::io::Write>(file: &File, init: &Init, output: &mut T) 
                         Type::U64 => { print_or_die!(output, "dq 0x{:X}", *v as u64); },
                         Type::I64 => { print_or_die!(output, "dq 0x{:X}", *v as u64); },
                         Type::Ptr {..} => { print_or_die!(output, "dq 0x{:X}", *v as u64); },
-                        // Constants can't possibly have other types
-                        dtype => panic!("Constant cannot have type {:?}", dtype),
+                        _ => panic!("Invalid type {:?} for constant", dtype)
                     }
-                },
+                }
 
                 // Static can be initialized by another static
                 Expr::Ident(ident) => {
-                    if let Some(ref s) = file.statics.get(ident) {
-                        // FIXME: fill with zeroes if the referenced static doesn't have an initializer
-                        let ref refed_init = s.init.as_ref().unwrap();
-                        gen_static_init(file, refed_init, output);
+                    if let Some(s) = file.statics.get(ident) {
+                        if let Some(s_init) = s.init.as_ref() {
+                            gen_static_init(dtype, s_init, file, output);
+                        } else {
+                            todo!("Static initialized by non-initialized static")
+                        }
                     } else {
-                        panic!("Unknown")
+                        panic!("Unknown identifier {:?}", ident)
                     }
                 },
 
@@ -57,13 +79,10 @@ fn gen_static_init<T: std::io::Write>(file: &File, init: &Init, output: &mut T) 
                     }
                 },
 
-                _ => panic!("Non constant static initializer"),
+                _ => panic!("Non constant static initializer")
             }
-        },
-        Init::List(ref list) => for i in list {
-            gen_static_init(file, i, output);
-        },
-    };
+        }
+    }
 }
 
 // Registers usable as temporary values
@@ -254,7 +273,7 @@ enum LVal {
     // Value is stored in static storage
     Static(Type, Rc<str>, usize),
     // Dereference of a pointer
-    Deref(Type, Box<Val>, usize),
+    Deref(Type, RVal, usize),
 }
 
 impl LVal {
@@ -266,12 +285,46 @@ impl LVal {
         }
     }
 
-    // Create a new lvalue at an offset from the current one
-    fn with_type_offset(self, dtype: Type, offset: usize) -> LVal {
-        match self {
-            LVal::Stack(_, o)        => LVal::Stack(dtype, o + offset),
-            LVal::Static(_, name, o) => LVal::Static(dtype, name, o + offset),
-            LVal::Deref(_, ptr, o)   => LVal::Deref(dtype, ptr, o + offset),
+    // Create an lvalue pointing to a struct field
+    fn record_field(&self, ident: &Rc<str>) -> LVal {
+        let record = match self.get_type() {
+            Type::Record(record) => record,
+            _ => panic!("Field access on non-record type"),
+        };
+
+        if let Some((dtype, offset)) = record.fields.get(ident) {
+            match self {
+                LVal::Stack(_, o) => LVal::Stack(dtype.clone(), o + offset),
+                LVal::Static(_, name, o) => LVal::Static(dtype.clone(), name.clone(), o + offset),
+                LVal::Deref(_, ptr, o) => LVal::Deref(dtype.clone(), ptr.clone(), o + offset),
+            }
+        } else {
+            panic!("Field {:?} doesn't exist", ident)
+        }
+    }
+
+    // Create an lvalue pointing to an array element
+    fn array_element<T: std::io::Write>(&self, idx: RVal, fctx: &mut FuncCtx, output: &mut T) -> LVal {
+        let (elem_type, elem_count) = match self.get_type() {
+            Type::Array { elem_type, elem_count } => (&**elem_type, *elem_count),
+            _ => panic!("Element access on non-array type"),
+        };
+
+        if let RVal::Immed(_, val) = idx {
+            if val >= elem_count {
+                panic!("Const array index out of bounds!")
+            }
+
+            match self {
+                LVal::Stack(_, o) => LVal::Stack(elem_type.clone(),
+                                                o + val * elem_type.get_size()),
+                LVal::Static(_, name, o) => LVal::Static(elem_type.clone(),
+                                                name.clone(), o + val * elem_type.get_size()),
+                LVal::Deref(_, ptr, o) => LVal::Deref(elem_type.clone(),
+                                                ptr.clone(), o + val * elem_type.get_size()),
+            }
+        } else {
+            todo!("non-constant array index")
         }
     }
 
@@ -292,7 +345,7 @@ impl LVal {
             },
             LVal::Deref(dtype, ptr, offset) => {
                 // Store pointer value in a register
-                let dreg = ptr.as_rval(fctx, output).to_reg(fctx, output);
+                let dreg = ptr.to_reg(fctx, output);
                 // Perform the dereference
                 print_or_die!(output, "mov {}, [{} + {}]",
                                         dreg.to_str(&dtype), dreg.to_str(&Type::U64), offset);
@@ -319,19 +372,18 @@ impl LVal {
             LVal::Deref(dtype, ptr, offset) => {
                 if offset > 0 {
                     // Add offset to pointer if required
-                    let dreg = ptr.as_rval(fctx, output).to_reg(fctx, output);
+                    let dreg = ptr.to_reg(fctx, output);
                     print_or_die!(output, "lea {}, [{} + {}]",
                                     dreg.to_str(&Type::U64),
                                     dreg.to_str(&Type::U64),
                                     offset);
                     RVal::Reg(Type::Ptr { base_type: Box::from(dtype) }, dreg)
                 } else {
-                    ptr.as_rval(fctx, output)
+                    ptr
                 }
             },
         }
     }
-
 }
 
 #[derive(Clone)]
@@ -378,13 +430,6 @@ enum Val {
 }
 
 impl Val {
-    fn get_type(&self) -> &Type {
-        match self {
-            Val::LVal(lval) => lval.get_type(),
-            Val::RVal(rval) => rval.get_type(),
-        }
-    }
-
     fn as_rval<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> RVal {
         match self {
             Val::LVal(lval) => lval.to_rval(fctx, output),
@@ -399,7 +444,10 @@ impl Val {
                 _ => (),
             },
             Val::LVal(lval) => match lval {
-                LVal::Deref(_, ptr, _) => ptr.discard(fctx),
+                LVal::Deref(_, ptr, _) => match ptr {
+                    RVal::Reg(_, reg) => fctx.regmask.clear_reg(reg),
+                    _ => (),
+                }
                 _ => (),
             },
         }
@@ -429,34 +477,26 @@ fn gen_expr<T: std::io::Write>(
             Val::RVal(gen_lval_expr(file, fctx, expr, output).to_ptr(fctx, output)),
 
         Expr::Deref(expr) => {
-            let src = gen_expr(file, fctx, expr, output);
-            match src.get_type() {
-                // Create dereferenced value from pointer
-                Type::Ptr { base_type } =>
-                    Val::LVal(LVal::Deref((**base_type).clone(), Box::from(src), 0)),
-                // Create new value with the array's element type at the same location
-                // (offset was already added to the array's value if this deref was
-                // de-sugared from array indexing)
-                // Type::Array { elem_type, .. } =>
-                //     ((*elem_type).clone(), src_val),
-                _ => panic!("Can't dereference non-reference type"),
+            let ptr = gen_rval_expr(file, fctx, expr, output);
+            if let Type::Ptr { base_type } = ptr.get_type() {
+                Val::LVal(LVal::Deref((**base_type).clone(), ptr, 0))
+            } else {
+                panic!("Dereference of non-pointer type")
             }
         }
 
-        Expr::Field(expr, ident) => {
-            let src = gen_lval_expr(file, fctx, expr, output);
+        Expr::Field(expr, ident) =>
+            Val::LVal(gen_lval_expr(file, fctx, expr, output).record_field(ident)),
 
-            let record = match src.get_type() {
-                Type::Record(record) => record.clone(),
-                _ => panic!("Can't access field of non-record type"),
-            };
-
-            if let Some((field_type, field_offset)) = record.fields.get(ident) {
-                Val::LVal(src.with_type_offset(field_type.clone(), *field_offset))
+        Expr::Elem(expr, idx_expr) => {
+            let arr = gen_lval_expr(file, fctx, expr, output);
+            if let Type::Array { elem_type, elem_count } = arr.get_type() {
+                let idx = gen_rval_expr(file, fctx, idx_expr, output);
+                Val::LVal(arr.array_element(idx, fctx, output))
             } else {
-                panic!("Non-existent field {} accessed", ident);
+                panic!("Element access on non-array type")
             }
-        },
+        }
 
         Expr::Call(expr, params) => {
             // Find target function to call
@@ -705,9 +745,8 @@ fn gen_set<T: std::io::Write>(dest: LVal, src: RVal, fctx: &mut FuncCtx, output:
                                     memwidth(&dtype), name, offset, src.to_string());
         },
         LVal::Deref(dtype, ptr, offset) => {
-            let ptr_rval = ptr.as_rval(fctx, output);
             print_or_die!(output, "mov {} [{} + {}], {}",
-                                    memwidth(&dtype), ptr_rval.to_string(), offset, src.to_string());
+                                    memwidth(&dtype), ptr.to_string(), offset, src.to_string());
         },
     }
 
@@ -730,17 +769,14 @@ fn gen_init<T: std::io::Write>(
                 panic!("Invalid array initializer!");
             }
             for (i, elem_init) in init_list.iter().enumerate() {
-                gen_init(
-                    dest.clone().with_type_offset((**elem_type).clone(),
-                                                    i * elem_type.get_size()),
-                    elem_init, file, fctx, output);
+                let elem_dest = dest.array_element(RVal::Immed(Type::U64, i), fctx, output);
+                gen_init(elem_dest, elem_init, file, fctx, output);
             }
         },
         Type::Record(record) => {
             let init_list = init.want_list();
-            for (i, (_, (field_type, field_offset))) in record.fields.iter().enumerate() {
-                gen_init(dest.clone().with_type_offset(field_type.clone(), *field_offset),
-                    &init_list[i], file, fctx, output);
+            for (i, (name, _)) in record.fields.iter().enumerate() {
+                gen_init(dest.record_field(name), &init_list[i], file, fctx, output);
             }
         },
         _ => { // Integer/pointer types
@@ -912,9 +948,9 @@ pub fn gen_asm<T: std::io::Write>(input: &File, output: &mut T) {
 
         match &cur_static.init {
             // Generate static initializer in .data
-            Some(ref init) => {
+            Some(init) => {
                 print_or_die!(output, "{}:", cur_static.name);
-                gen_static_init(&input, init, output);
+                gen_static_init(&cur_static.dtype, init, &input, output);
             },
             // Take note for bss allocation later
             None => {

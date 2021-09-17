@@ -174,8 +174,7 @@ impl<'source> Parser<'source> {
             } else if maybe_want!(self, Token::LSq) {
                 // NOTE: array indexing desugars into pointer arithmetic
                 // FIXME: we should take the pointed type's size into account
-                expr = Expr::Deref(Box::from(
-                    Expr::Add(Box::from(expr), Box::from(self.want_expr()))));
+                expr = Expr::Elem(Box::from(expr), Box::from(self.want_expr()));
                 want!(self, Token::RSq, "Expected ]");
             } else {
                 return expr;
