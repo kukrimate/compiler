@@ -480,117 +480,167 @@ fn gen_expr<T: std::io::Write>(
         },
 
         Expr::Inv(expr) => {
-            let (src_type, src_val) = gen_expr(file, fctx, expr, output);
-            match src_val.as_rval(fctx, output) {
-                RVal::Immed(val) => {
-                    // Fold bitwise inverse of constant
-                    (src_type, Val::RVal(RVal::Immed(!val)))
-                },
-                RVal::Reg(reg) => {
-                    print_or_die!(output, "not {}", reg.to_str());
-                    (src_type, Val::RVal(RVal::Reg(reg)))
-                },
+            let (dtype, src) = gen_rval_expr(file, fctx, expr, output);
+            if let RVal::Reg(reg) = src {
+                print_or_die!(output, "not {}", reg.to_str());
+                (dtype, Val::RVal(RVal::Reg(reg)))
+            } else {
+                unreachable!()
             }
         },
 
         Expr::Neg(expr) => {
-            let (src_type, src_val) = gen_expr(file, fctx, expr, output);
-            match src_val.as_rval(fctx, output) {
-                RVal::Immed(val) => {
-                    // Fold two's complement negation of constant
-                    (src_type, Val::RVal(RVal::Immed(!val + 1)))
-                },
-                RVal::Reg(reg) => {
-                    print_or_die!(output, "neg {}", reg.to_str());
-                    (src_type, Val::RVal(RVal::Reg(reg)))
-                },
+            let (dtype, src) = gen_rval_expr(file, fctx, expr, output);
+            if let RVal::Reg(reg) = src {
+                print_or_die!(output, "neg {}", reg.to_str());
+                (dtype, Val::RVal(RVal::Reg(reg)))
+            } else {
+                unreachable!()
             }
         },
 
         Expr::Add(lhs, rhs) => {
-            let (lhs_type, lhs_val) = gen_expr(file, fctx, lhs, output);
-            let (rhs_type, rhs_val) = gen_expr(file, fctx, rhs, output);
+            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
+            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
             if lhs_type != rhs_type {
                 panic!("Add type mismatch, left: {:?}, right: {:?}",
                          lhs_type, rhs_type);
             }
 
-            let lhs_rval = lhs_val.as_rval(fctx, output);
-            let rhs_rval = rhs_val.as_rval(fctx, output);
-            match lhs_rval {
-                RVal::Immed(l) => {
-                    match rhs_rval {
-                        RVal::Immed(r) => {
-                            // Fold add of two constants
-                            (lhs_type, Val::RVal(RVal::Immed(l + r)))
-                        },
-                        RVal::Reg(rreg) => {
-                            print_or_die!(output, "add {}, {}", rreg.to_str(), l);
-                            (lhs_type, Val::RVal(RVal::Reg(rreg)))
-                        },
-                    }
-                },
-                RVal::Reg(lreg) => {
-                    match rhs_rval {
-                        RVal::Immed(r) => {
-                            print_or_die!(output, "add {}, {}", lreg.to_str(), r);
-                            (lhs_type, Val::RVal(RVal::Reg(lreg)))
-                        },
-                        RVal::Reg(rreg) => {
-                            assert!(lreg != rreg); // Shouldn't ever happen
-                            print_or_die!(output, "add {}, {}",
-                                lreg.to_str(), rreg.to_str());
-                            fctx.regmask.clear_reg(rreg);
-                            (lhs_type, Val::RVal(RVal::Reg(lreg)))
-                        },
-                    }
-                },
+            if let RVal::Reg(reg) = lhs_val {
+                print_or_die!(output, "add {}, {}",
+                    reg.to_str(), rhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else if let RVal::Reg(reg) = rhs_val {
+                print_or_die!(output, "add {}, {}",
+                    reg.to_str(), lhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else {
+                unreachable!();
             }
         },
-/*
-        Expr::Sub(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::Sub(lhs, rhs) => {
+            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
+            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
+            if lhs_type != rhs_type {
+                panic!("Sub type mismatch, left: {:?}, right: {:?}",
+                         lhs_type, rhs_type);
+            }
+
+            if let RVal::Reg(reg) = lhs_val {
+                print_or_die!(output, "sub {}, {}",
+                    reg.to_str(), rhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else if let RVal::Reg(reg) = rhs_val {
+                print_or_die!(output, "sub {}, {}",
+                    reg.to_str(), lhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else {
+                unreachable!();
+            }
         },
-        Expr::Mul(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::Mul(lhs, rhs) => {
+            todo!("multiply")
         },
-        Expr::Div(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::Div(lhs, rhs) => {
+            todo!("divide")
         },
-        Expr::Rem(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::Rem(lhs, rhs) => {
+            todo!("remainder")
         },
-        Expr::Or(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::Or(lhs, rhs) => {
+            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
+            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
+            if lhs_type != rhs_type {
+                panic!("Or type mismatch, left: {:?}, right: {:?}",
+                         lhs_type, rhs_type);
+            }
+
+            if let RVal::Reg(reg) = lhs_val {
+                print_or_die!(output, "or {}, {}",
+                    reg.to_str(), rhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else if let RVal::Reg(reg) = rhs_val {
+                print_or_die!(output, "or {}, {}",
+                    reg.to_str(), lhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else {
+                unreachable!();
+            }
         },
-        Expr::And(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::And(lhs, rhs) => {
+            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
+            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
+            if lhs_type != rhs_type {
+                panic!("And type mismatch, left: {:?}, right: {:?}",
+                         lhs_type, rhs_type);
+            }
+
+            if let RVal::Reg(reg) = lhs_val {
+                print_or_die!(output, "and {}, {}",
+                    reg.to_str(), rhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else if let RVal::Reg(reg) = rhs_val {
+                print_or_die!(output, "and {}, {}",
+                    reg.to_str(), lhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else {
+                unreachable!();
+            }
         },
-        Expr::Xor(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::Xor(lhs, rhs) => {
+            let (lhs_type, lhs_val) = gen_rval_expr(file, fctx, lhs, output);
+            let (rhs_type, rhs_val) = gen_rval_expr(file, fctx, rhs, output);
+            if lhs_type != rhs_type {
+                panic!("Xor type mismatch, left: {:?}, right: {:?}",
+                         lhs_type, rhs_type);
+            }
+
+            if let RVal::Reg(reg) = lhs_val {
+                print_or_die!(output, "xor {}, {}",
+                    reg.to_str(), rhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else if let RVal::Reg(reg) = rhs_val {
+                print_or_die!(output, "xor {}, {}",
+                    reg.to_str(), lhs_val.to_string());
+                (lhs_type, Val::RVal(RVal::Reg(reg)))
+            } else {
+                unreachable!();
+            }
         },
-        Expr::Lsh(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::Lsh(lhs, rhs) => {
+            todo!("left shift")
         },
-        Expr::Rsh(ref expr1, ref expr2) => {
-            gen_expr(expr1, locals, data);
-            gen_expr(expr2, locals, data);
+
+        Expr::Rsh(lhs, rhs) => {
+            todo!("right shift")
         },
-        */
 
         Expr::Cast(expr, dtype) => {
             let (_, src_val) = gen_expr(file, fctx, expr, output);
             (dtype.clone(), src_val)
         },
-        _ => todo!("expression {:?}", in_expr),
+    }
+}
+
+fn gen_rval_expr<T: std::io::Write>(
+        file: &File,
+        fctx: &mut FuncCtx,
+        in_expr: &Expr,
+        output: &mut T) -> (Type, RVal) {
+
+    let (dtype, val) = gen_expr(file, fctx, in_expr, output);
+    match val {
+        Val::LVal(lval) => (dtype, lval.to_rval(fctx, output)),
+        Val::RVal(rval) => (dtype, rval),
     }
 }
 
