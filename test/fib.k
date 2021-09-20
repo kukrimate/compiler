@@ -3,9 +3,9 @@ fn extern $printf($str: *u8, ...) -> i32;
 
 // Entry point
 fn export $main() {
-    auto $i: u32 = 1u32;
-    auto $j: u32 = 1u32;
-    auto $t: u32;
+    auto $i: u64 = 1u64;
+    auto $j: u64 = 1u64;
+    auto $t: u64;
 @loop:
     eval $printf("%d\n" u8, $i);
     set $t = $j;

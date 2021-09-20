@@ -430,13 +430,6 @@ enum Val {
 }
 
 impl Val {
-    fn as_rval<T: std::io::Write>(self, fctx: &mut FuncCtx, output: &mut T) -> RVal {
-        match self {
-            Val::LVal(lval) => lval.to_rval(fctx, output),
-            Val::RVal(rval) => rval,
-        }
-    }
-
     fn discard(self, fctx: &mut FuncCtx) {
         match self {
             Val::RVal(rval) => match rval {
@@ -793,8 +786,14 @@ fn gen_ret<T: std::io::Write>(retval: RVal, fctx: &mut FuncCtx, output: &mut T) 
     Val::RVal(retval).discard(fctx);
 }
 
-fn gen_jcc<T: std::io::Write>(val1: RVal, val2: RVal, fctx: &mut FuncCtx, output: &mut T) {
+fn gen_jcc<T: std::io::Write>(label: &Rc<str>, expr1: &Expr, expr2: &Expr, insn: &str,
+                                file: &File, fctx: &mut FuncCtx, output: &mut T) {
+
+    let val1 = gen_rval_expr(file, fctx, expr1, output);
+    let val2 = gen_rval_expr(file, fctx, expr2, output);
     print_or_die!(output, "cmp {}, {}", val1.to_string(), val2.to_string());
+    print_or_die!(output, "{} .{}", insn, label);
+
     // We can de-clobber all registers allocated for temporaries (if any)
     Val::RVal(val1).discard(fctx);
     Val::RVal(val2).discard(fctx);
@@ -882,53 +881,23 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
                     let retval = gen_rval_expr(file, &mut ctx, expr, output);
                     gen_ret(retval, &mut ctx, output);
                 }
-                print_or_die!(output, "jmp .done");
+                print_or_die!(output, "jmp .$done");
             },
-            Stmt::Jeq(label, expr1, expr2) => {
-                let val1 = gen_expr(file, &mut ctx, expr1, output);
-                let val2 = gen_expr(file, &mut ctx, expr2, output);
-                gen_jcc(val1.as_rval(&mut ctx, output),
-                        val2.as_rval(&mut ctx, output),
-                        &mut ctx, output);
-                print_or_die!(output, "je .{}", label);
-            },
-            Stmt::Jl(label, expr1, expr2) => {
-                let val1 = gen_expr(file, &mut ctx, expr1, output);
-                let val2 = gen_expr(file, &mut ctx, expr2, output);
-                gen_jcc(val1.as_rval(&mut ctx, output),
-                        val2.as_rval(&mut ctx, output),
-                        &mut ctx, output);
-                print_or_die!(output, "jl .{}", label);
-            },
-            Stmt::Jle(label, expr1, expr2) => {
-                let val1 = gen_expr(file, &mut ctx, expr1, output);
-                let val2 = gen_expr(file, &mut ctx, expr2, output);
-                gen_jcc(val1.as_rval(&mut ctx, output),
-                        val2.as_rval(&mut ctx, output),
-                        &mut ctx, output);
-                print_or_die!(output, "jle .{}", label);
-            },
-            Stmt::Jg(label, expr1, expr2) => {
-                let val1 = gen_expr(file, &mut ctx, expr1, output);
-                let val2 = gen_expr(file, &mut ctx, expr2, output);
-                gen_jcc(val1.as_rval(&mut ctx, output),
-                        val2.as_rval(&mut ctx, output),
-                        &mut ctx, output);
-                print_or_die!(output, "jg .{}", label);
-            },
-            Stmt::Jge(label, expr1, expr2) => {
-                let val1 = gen_expr(file, &mut ctx, expr1, output);
-                let val2 = gen_expr(file, &mut ctx, expr2, output);
-                gen_jcc(val1.as_rval(&mut ctx, output),
-                        val2.as_rval(&mut ctx, output),
-                        &mut ctx, output);
-                print_or_die!(output, "jge .{}", label);
-            },
+            Stmt::Jeq(label, expr1, expr2) =>
+                gen_jcc(label, expr1, expr2, "je", file, &mut ctx, output),
+            Stmt::Jl(label, expr1, expr2) =>
+                gen_jcc(label, expr1, expr2, "jl", file, &mut ctx, output),
+            Stmt::Jle(label, expr1, expr2) =>
+                gen_jcc(label, expr1, expr2, "jle", file, &mut ctx, output),
+            Stmt::Jg(label, expr1, expr2) =>
+                gen_jcc(label, expr1, expr2, "jg", file, &mut ctx, output),
+            Stmt::Jge(label, expr1, expr2) =>
+                gen_jcc(label, expr1, expr2, "jge", file, &mut ctx, output),
         }
     }
 
     // Generate function epilogue
-    print_or_die!(output, ".done:\nleave\nret");
+    print_or_die!(output, ".$done:\nleave\nret");
 }
 
 pub fn gen_asm<T: std::io::Write>(input: &File, output: &mut T) {
