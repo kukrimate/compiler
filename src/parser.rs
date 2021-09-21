@@ -68,9 +68,9 @@ impl<'source> Parser<'source> {
         // Create NUL-terminated initializer for the string
         let mut list = Vec::new();
         for b in data.as_bytes() {
-            list.push(Init::Base(Expr::Const(Type::U8, *b as usize)));
+            list.push(Init::Base(Expr::Const(Rc::from(Type::U8), *b as usize)));
         }
-        list.push(Init::Base(Expr::Const(Type::U8, 0)));
+        list.push(Init::Base(Expr::Const(Rc::from(Type::U8), 0)));
 
         // Create static variable for it
         self.file.statics.insert(name.clone(),
@@ -79,7 +79,7 @@ impl<'source> Parser<'source> {
                 name: name.clone(),
                 dtype: Type::Array {
                     elem_count: list.len(),
-                    elem_type: Box::from(Type::U8),
+                    elem_type: Rc::from(Type::U8),
                 },
                 init: Some(Init::List(list)),
             });
@@ -151,7 +151,7 @@ impl<'source> Parser<'source> {
                     Expr::Ident(self.make_string_lit(string_type, s))))
             },
             Token::Ident(s) => Expr::Ident(s),
-            Token::Constant(val) => Expr::Const(self.want_type_suffix(), val),
+            Token::Constant(val) => Expr::Const(Rc::from(self.want_type_suffix()), val),
             _ => panic!("Invalid constant value!"),
         }
     }
@@ -201,7 +201,7 @@ impl<'source> Parser<'source> {
     fn want_cast(&mut self) -> Expr {
         let expr = self.want_unary();
         if maybe_want!(self, Token::Cast) {
-            expr.make_cast(self.want_type())
+            expr.make_cast(Rc::from(self.want_type()))
         } else {
             expr
         }
@@ -283,9 +283,11 @@ impl<'source> Parser<'source> {
             Token::I32  => Type::I32,
             Token::U64  => Type::U64,
             Token::I64  => Type::I64,
-            Token::Mul  => Type::Ptr { base_type: Box::new(self.want_type()) },
+            Token::Mul  => Type::Ptr {
+                base_type: Rc::from(self.want_type())
+            },
             Token::LSq  => {
-                let elem_type = Box::new(self.want_type());
+                let elem_type = Rc::from(self.want_type());
                 want!(self, Token::Semicolon, "Expected ;");
                 let elem_count_expr = self.want_expr();
                 want!(self, Token::RSq, "Expected ]");
@@ -316,9 +318,9 @@ impl<'source> Parser<'source> {
         while !maybe_want!(self, Token::RCurly) {
             let ident = self.want_ident();
             want!(self, Token::Colon, "Expected :");
-            let r#type = self.want_type();
+            let dtype = self.want_type();
             let offset;
-            let cur_size = r#type.get_size();
+            let cur_size = dtype.get_size();
             if is_union {
                 offset = 0;
                 if size < cur_size {
@@ -328,7 +330,7 @@ impl<'source> Parser<'source> {
                 offset = size;
                 size += cur_size;
             }
-            fields.insert(ident, (r#type, offset));
+            fields.insert(ident, (Rc::from(dtype), offset));
             if !maybe_want!(self, Token::Comma) {
                 want!(self, Token::RCurly, "Expected right curly");
                 break;
@@ -373,12 +375,12 @@ impl<'source> Parser<'source> {
             Token::Auto     => {
                 let ident = self.want_ident();
                 want!(self, Token::Colon, "Expected :");
-                let r#type = self.want_type();
+                let dtype = self.want_type();
                 let mut init = None;
                 if maybe_want!(self, Token::Eq) {
                     init = Some(self.want_initializer());
                 }
-                Stmt::Auto(ident, r#type, init)
+                Stmt::Auto(ident, Rc::from(dtype), init)
             },
             Token::Label(s) => Stmt::Label(s),
             Token::Set      => {
@@ -479,8 +481,7 @@ impl<'source> Parser<'source> {
                         // Otherwise try reading a normal parameter
                         let ident = self.want_ident();
                         want!(self, Token::Colon, "Expected :");
-                        let r#type = self.want_type();
-                        func.params.push((ident, r#type));
+                        func.params.push((ident, Rc::from(self.want_type())));
                         if !maybe_want!(self, Token::Comma) {
                             want!(self, Token::RParen, "Expected )");
                             break;
@@ -489,7 +490,7 @@ impl<'source> Parser<'source> {
 
                     // Read return type (if any)
                     if maybe_want!(self, Token::Arrow) {
-                        func.rettype = self.want_type();
+                        func.rettype = Rc::from(self.want_type());
                     }
 
                     // Read body (if present)

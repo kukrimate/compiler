@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 #[derive(Debug,PartialEq)]
 pub struct Record {
-    pub fields: HashMap<Rc<str>, (Type, usize)>,
+    pub fields: HashMap<Rc<str>, (Rc<Type>, usize)>,
     pub size: usize,
 }
 
@@ -29,10 +29,10 @@ pub enum Type {
     U64,
     I64,
     Ptr {
-        base_type: Box<Type>,
+        base_type: Rc<Type>,
     },
     Array {
-        elem_type: Box<Type>,
+        elem_type: Rc<Type>,
         elem_count: usize,
     },
     Record(Rc<Record>),
@@ -66,7 +66,7 @@ impl Type {
 #[derive(Debug)]
 pub enum Expr {
     // Constant value
-    Const(Type, usize),
+    Const(Rc<Type>, usize),
     // Identifier
     Ident(Rc<str>),
     // Pointer ref/deref
@@ -91,7 +91,7 @@ pub enum Expr {
     Lsh(Box<Expr>, Box<Expr>),
     Rsh(Box<Expr>, Box<Expr>),
     // Cast
-    Cast(Box<Expr>, Type)
+    Cast(Box<Expr>, Rc<Type>)
 }
 
 //
@@ -113,7 +113,7 @@ impl Expr {
         }
     }
 
-    pub fn make_cast(self, new_type: Type) -> Expr {
+    pub fn make_cast(self, new_type: Rc<Type>) -> Expr {
         match self {
             Expr::Const(_, val) => Expr::Const(new_type, val),
             expr => Expr::Cast(Box::from(expr), new_type)
@@ -261,7 +261,7 @@ impl Init {
 pub enum Stmt {
     Eval(Expr),
     Ret(Option<Expr>),
-    Auto(Rc<str>, Type, Option<Init>),
+    Auto(Rc<str>, Rc<Type>, Option<Init>),
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
@@ -298,10 +298,10 @@ pub struct Func {
     // Function name
     pub name: Rc<str>,
     // Parameters
-    pub params: Vec<(Rc<str>, Type)>,
+    pub params: Vec<(Rc<str>, Rc<Type>)>,
     pub varargs: bool,
     // Return type
-    pub rettype: Type,
+    pub rettype: Rc<Type>,
     // Statements
     pub stmts: Vec<Stmt>,
 }
@@ -313,7 +313,7 @@ impl Func {
             name: name,
             params: Vec::new(),
             varargs: false,
-            rettype: Type::VOID,
+            rettype: Rc::from(Type::VOID),
             stmts: Vec::new(),
         }
     }
