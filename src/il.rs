@@ -90,7 +90,8 @@ enum Op {
     Lsh(Operand, Operand),
     Rsh(Operand, Operand),
     // Function Call
-    Call(Rc<str>, Operand, Vec<Operand>),
+    Call(Rc<str>, Vec<Operand>, Operand),
+    GotoSub(Rc<str>, Vec<Operand>),
     // Define a label
     Label(Rc<str>),
     // Jumps
@@ -203,9 +204,10 @@ fn conv_lval<'a>(expr: &'a ast::Expr, res: &'a Resolv, ops: &mut Vec<Op>) -> (Rc
 
         ast::Expr::Field(expr, ident) => {
             let (dtype, lval) = conv_lval(expr, res, ops);
-            if let ast::Type::Record(record) = &*dtype {
-                if let Some((field_type, offset)) = record.fields.get(ident) {
-                    (field_type.clone(), lval.to_field(*offset, ops))
+            if let ast::Type::Record { fields, field_map, .. } = &*dtype {
+                if let Some(i) = field_map.get(ident) {
+                    let (field_type, field_offset) = &fields[*i];
+                    (field_type.clone(), lval.to_field(*field_offset, ops))
                 } else {
                     panic!("Record field {} doesn't exist", ident)
                 }
@@ -270,15 +272,27 @@ fn conv_expr<'a>(expr: &'a ast::Expr, res: &'a Resolv, ops: &mut Vec<Op>) -> (Rc
         ast::Expr::Call(expr, params) => {
             if let ast::Expr::Ident(ident) = &**expr {
                 let func = res.resolve_func(ident);
-                let ret_operand = alloc_reg(load_width(&func.rettype));
-                let mut param_operands = Vec::new();
+
+                let mut operands = Vec::new();
                 for param in params {
                     // FIXME: check parameter type
                     let (_, operand) = conv_expr(param, res, ops);
-                    param_operands.push(operand);
+                    operands.push(operand);
                 }
-                ops.push(Op::Call(ident.clone(), ret_operand.clone(), param_operands));
-                (func.rettype.clone(), ret_operand)
+
+                // Evaluate each parameter
+                let operands = params.iter()
+                    .map(|param: &ast::Expr| conv_expr(param, res, ops).1)
+                    .collect();
+
+                // Generate call operation
+                if let Some(rettype) = func.rettype.as_ref() {
+                    let reg = alloc_reg(load_width(rettype));
+                    ops.push(Op::Call(ident.clone(), operands, reg.clone()));
+                    (rettype.clone(), reg)
+                } else {
+                    todo!("implement gotosub")
+                }
             } else {
                 panic!("Call target must be an identifier");
             }
@@ -344,15 +358,12 @@ fn conv_init<'a>(dtype: &Rc<ast::Type>, dest: LVal, init: &ast::Init, res: &'a R
             }
         },
 
-        ast::Type::Record(record) => {
-            let init_list = init.want_list();
-            for (i, (_, (field_type, offset))) in record.fields.iter().enumerate() {
-                let field_lval = dest.clone().to_field(*offset, ops);
-                conv_init(field_type, field_lval, &init_list[i], res, ops);
+        ast::Type::Record { fields, .. } => {
+            for ((field_type, field_offset), field_init) in fields.iter().zip(init.want_list()) {
+                let field_lval = dest.clone().to_field(*field_offset, ops);
+                conv_init(field_type, field_lval, field_init, res, ops);
             }
         },
-
-        ast::Type::VOID => unreachable!(),
 
         // Integer/pointer types (base initializer)
         dtype => {
