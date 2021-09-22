@@ -266,6 +266,7 @@ pub enum Stmt {
     Set(Expr, Expr),
     Jmp(Rc<str>),
     Jeq(Rc<str>, Expr, Expr),
+    Jneq(Rc<str>, Expr, Expr),
     Jl(Rc<str>, Expr, Expr),
     Jle(Rc<str>, Expr, Expr),
     Jg(Rc<str>, Expr, Expr),

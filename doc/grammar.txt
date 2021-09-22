@@ -52,6 +52,7 @@
               | ret [<expression>] ;
 
 <conditional-jump> ::= jeq
+                     | jneq
                      | jl
                      | jle
                      | jg

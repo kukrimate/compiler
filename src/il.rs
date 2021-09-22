@@ -73,19 +73,6 @@ enum Operand {
     StaticPtr(Rc<str>),
 }
 
-impl Operand {
-    fn width(&self) -> Width {
-        match self {
-            Operand::Byte(_) | Operand::ByteReg(_) => Width::Byte,
-            Operand::Word(_) | Operand::WordReg(_) => Width::Word,
-            Operand::DWord(_) | Operand::DWordReg(_) => Width::DWord,
-            Operand::QWord(_) | Operand::QWordReg(_) => Width::QWord,
-            Operand::Ptr(_) | Operand::PtrReg(_) |
-                Operand::LocalPtr(_) | Operand::StaticPtr(_) => Width::Ptr,
-        }
-    }
-}
-
 #[derive(Debug)]
 enum Op {
     // Copy value
@@ -122,24 +109,6 @@ enum Op {
     // Return
     Return(Operand),
     GotoEnd,
-}
-
-enum LVal {
-    // Reference to a symbol
-    Local(Rc<Local>),
-    Static(Rc<str>),
-    // Dereference (of a pointer)
-    Deref(Operand),
-}
-
-impl LVal {
-    fn to_ptr(self) -> Operand {
-        match self {
-            LVal::Local(local) => Operand::LocalPtr(local),
-            LVal::Static(name) => Operand::StaticPtr(name),
-            LVal::Deref(ptr) => ptr,
-        }
-    }
 }
 
 static mut REGCNT: usize = 0;
@@ -185,6 +154,38 @@ impl<'a> Resolv<'a> {
     }
 }
 
+#[derive(Clone)]
+enum LVal {
+    // Reference to a symbol
+    Local(Rc<Local>),
+    Static(Rc<str>),
+    // Dereference (of a pointer)
+    Deref(Operand),
+}
+
+impl LVal {
+    fn to_ptr(self) -> Operand {
+        match self {
+            LVal::Local(local) => Operand::LocalPtr(local),
+            LVal::Static(name) => Operand::StaticPtr(name),
+            LVal::Deref(ptr) => ptr,
+        }
+    }
+
+    fn to_field(self, offset: usize, ops: &mut Vec<Op>) -> LVal {
+        let reg = alloc_reg(Width::Ptr);
+        ops.push(Op::Set(reg.clone(), self.to_ptr()));
+        ops.push(Op::Add(reg.clone(), Operand::Ptr(offset as u64)));
+        LVal::Deref(reg)
+    }
+
+    fn to_elem(self, idx: Operand, elem_size: usize, ops: &mut Vec<Op>) -> LVal {
+        ops.push(Op::Mul(idx.clone(), Operand::Ptr(elem_size as u64)));
+        ops.push(Op::Add(idx.clone(), self.to_ptr()));
+        LVal::Deref(idx)
+    }
+}
+
 fn conv_lval<'a>(expr: &'a ast::Expr, res: &'a Resolv, ops: &mut Vec<Op>) -> (Rc<ast::Type>, LVal) {
     match expr {
         ast::Expr::Ident(ident) => res.resolve_name(&ident),
@@ -202,10 +203,7 @@ fn conv_lval<'a>(expr: &'a ast::Expr, res: &'a Resolv, ops: &mut Vec<Op>) -> (Rc
             let (dtype, lval) = conv_lval(expr, res, ops);
             if let ast::Type::Record(record) = &*dtype {
                 if let Some((field_type, offset)) = record.fields.get(ident) {
-                    let reg = alloc_reg(Width::Ptr);
-                    ops.push(Op::Set(reg.clone(), lval.to_ptr()));
-                    ops.push(Op::Add(reg.clone(), Operand::Ptr(*offset as u64)));
-                    (field_type.clone(), LVal::Deref(reg))
+                    (field_type.clone(), lval.to_field(*offset, ops))
                 } else {
                     panic!("Record field {} doesn't exist", ident)
                 }
@@ -219,9 +217,7 @@ fn conv_lval<'a>(expr: &'a ast::Expr, res: &'a Resolv, ops: &mut Vec<Op>) -> (Rc
             // FIXME: make sure index is a scalar value
             let (_, idx) = conv_expr(idx_expr, res, ops);
             if let ast::Type::Array { elem_type, .. } = &*dtype {
-                ops.push(Op::Mul(idx.clone(), Operand::Ptr(elem_type.get_size() as u64)));
-                ops.push(Op::Add(idx.clone(), lval.to_ptr()));
-                (elem_type.clone(), LVal::Deref(idx))
+                (elem_type.clone(), lval.to_elem(idx, elem_type.get_size(), ops))
             } else {
                 panic!("Cannot access field of non-record type")
             }
@@ -332,6 +328,41 @@ fn conv_expr<'a>(expr: &'a ast::Expr, res: &'a Resolv, ops: &mut Vec<Op>) -> (Rc
     }
 }
 
+fn conv_init<'a>(dtype: &Rc<ast::Type>, dest: LVal, init: &ast::Init, res: &'a Resolv, ops: &mut Vec<Op>) {
+    match &**dtype {
+        ast::Type::Array { elem_type, elem_count } => {
+            let init_list = init.want_list();
+            if init_list.len() != *elem_count {
+                panic!("Invalid array initializer!");
+            }
+            for (i, elem_init) in init_list.iter().enumerate() {
+                let idx_operand = Operand::Ptr(i as u64);
+                let elem_lval = dest.clone().to_elem(idx_operand, elem_type.get_size(), ops);
+                conv_init(elem_type, elem_lval, elem_init, res, ops);
+            }
+        },
+
+        ast::Type::Record(record) => {
+            let init_list = init.want_list();
+            for (i, (_, (field_type, offset))) in record.fields.iter().enumerate() {
+                let field_lval = dest.clone().to_field(*offset, ops);
+                conv_init(field_type, field_lval, &init_list[i], res, ops);
+            }
+        },
+
+        ast::Type::VOID => unreachable!(),
+
+        // Integer/pointer types (base initializer)
+        dtype => {
+            let (init_type, operand) = conv_expr(init.want_expr(), res, ops);
+            if dtype != &*init_type {
+                panic!("Initializer with the wrong type expected {:?}, got {:?}", dtype, init_type)
+            }
+            ops.push(Op::Store(dest.to_ptr(), operand));
+        },
+    }
+}
+
 // Function
 #[derive(Debug)]
 pub struct Func {
@@ -355,6 +386,17 @@ impl Func {
             res.locals.insert(name, (dtype.clone(), Rc::from(Local::new(dtype))));
         }
 
+        macro_rules! conv_jcc {
+            ($op:path,$label:expr,$expr1:expr,$expr2:expr) => {{
+                let (type1, val1) = conv_expr($expr1, &mut res, &mut ops);
+                let (type2, val2) = conv_expr($expr2, &mut res, &mut ops);
+                if type1 != type2 {
+                    panic!("Comparison type mis-match {:?} and {:?}", type1, type2)
+                }
+                ops.push($op($label.clone(), val1, val2));
+            }}
+        }
+
         // Translate to IL operations
         for stmt in &ast_func.stmts {
             match stmt {
@@ -372,14 +414,15 @@ impl Func {
                     }
                 },
 
-                ast::Stmt::Auto(name, dtype, init) => {
-                    // Make sure the identifier is not already used
+                ast::Stmt::Auto(name, dtype, maybe_init) => {
                     if let Some(_) = res.locals.get(name) {
                         panic!("Identifier {} already in use in the same scope", name)
                     }
-                    // Allocate local
-                    res.locals.insert(name, (dtype.clone(), Rc::from(Local::new(dtype))));
-                    // TODO: Generate initializer
+                    let local = Rc::from(Local::new(dtype));
+                    if let Some(init) = maybe_init {
+                        conv_init(dtype, LVal::Local(local.clone()), init, &mut res, &mut ops);
+                    }
+                    res.locals.insert(name, (dtype.clone(), local.clone()));
                 },
 
                 ast::Stmt::Label(label) => ops.push(Op::Label(label.clone())),
@@ -397,7 +440,12 @@ impl Func {
                     ops.push(Op::Jmp(label.clone()));
                 },
 
-                _ => todo!("statement {:?}", stmt),
+                ast::Stmt::Jeq(label, expr1, expr2) => conv_jcc!(Op::Je, label, expr1, expr2),
+                ast::Stmt::Jneq(label, expr1, expr2) => conv_jcc!(Op::Jne, label, expr1, expr2),
+                ast::Stmt::Jl(label, expr1, expr2) => conv_jcc!(Op::Jl, label, expr1, expr2),
+                ast::Stmt::Jle(label, expr1, expr2) => conv_jcc!(Op::Jle, label, expr1, expr2),
+                ast::Stmt::Jg(label, expr1, expr2) => conv_jcc!(Op::Jg, label, expr1, expr2),
+                ast::Stmt::Jge(label, expr1, expr2) => conv_jcc!(Op::Jge, label, expr1, expr2),
             }
         }
 

@@ -396,6 +396,13 @@ impl<'source> Parser<'source> {
                 want!(self, Token::Comma, "Expected ,");
                 Stmt::Jeq(label, expr1, self.want_expr())
             },
+            Token::Jneq     => {
+                let label = self.want_label();
+                want!(self, Token::Comma, "Expected ,");
+                let expr1 = self.want_expr();
+                want!(self, Token::Comma, "Expected ,");
+                Stmt::Jneq(label, expr1, self.want_expr())
+            },
             Token::Jl       => {
                 let label = self.want_label();
                 want!(self, Token::Comma, "Expected ,");

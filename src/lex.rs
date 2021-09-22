@@ -202,6 +202,8 @@ pub enum Token {
     Jmp,
     #[token("jeq")]
     Jeq,
+    #[token("jneq")]
+    Jneq,
     #[token("jl")]
     Jl,
     #[token("jle")]
