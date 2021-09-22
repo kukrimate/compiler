@@ -12,58 +12,140 @@ use std::process::Command;
 use std::rc::Rc;
 use tempfile::tempdir;
 
-// Generate assembly code for a static initializer
-fn gen_static_init(file: &ast::File, dtype: &Rc<ast::Type>, init: &ast::Init, output: &mut fs::File) {
-    match &**dtype {
-        ast::Type::Array { elem_type, elem_count } => {
-            let init_list = init.want_list();
-            if init_list.len() != *elem_count {
-                panic!("Invalid static array initializer");
-            }
-            for elem_init in init_list {
-                gen_static_init(file, elem_type, elem_init, output);
-            }
-        },
+// Code generation context
+struct Gen<'a> {
+    file: &'a ast::File,
+    output: &'a mut fs::File,
+    exports: Vec<Rc<str>>,
+    externs: Vec<Rc<str>>,
+}
 
-        ast::Type::Record(record) => {
-            // FIXME: this doesn't work for unions
-            for ((_, (field_type, _)), field_init) in
-                                record.fields.iter().zip(init.want_list()) {
-                gen_static_init(file, field_type, field_init, output);
-            }
-        },
+impl<'a> Gen<'a> {
+    fn new(file: &'a ast::File, output: &'a mut fs::File) -> Gen<'a> {
+        Gen {
+            file: file,
+            output: output,
+            exports: Vec::new(),
+            externs: Vec::new(),
+        }
+    }
 
-        _ => {
-            match init.want_expr() {
-                // Static can be initialized by a constant
-                ast::Expr::Const(ctype, val) => {
-                    if dtype != ctype {
-                        panic!("Type mismatch for static initializer")
-                    }
+    // Generate assembly code for a static initializer
+    fn gen_static_init(&mut self, dtype: &Rc<ast::Type>, init: &ast::Init) {
+        match &**dtype {
+            ast::Type::Array { elem_type, elem_count } => {
+                let init_list = init.want_list();
+                if init_list.len() != *elem_count {
+                    panic!("Invalid static array initializer");
+                }
+                for elem_init in init_list {
+                    self.gen_static_init(elem_type, elem_init);
+                }
+            },
 
-                    match &**dtype {
-                        ast::Type::U8 | ast::Type::I8
-                            => writeln!(output, "db 0x{:X}", *val as u8).unwrap(),
-                        ast::Type::U16 | ast::Type::I16
-                            => writeln!(output, "dw 0x{:X}", *val as u16).unwrap(),
-                        ast::Type::U32 | ast::Type::I32
-                            => writeln!(output, "dd 0x{:X}", *val as u32).unwrap(),
-                        ast::Type::U64 | ast::Type::I64 | ast::Type::Ptr {..}
-                            => writeln!(output, "dq 0x{:X}", *val as u64).unwrap(),
-
-                        _ => panic!("Invalid type {:?} for constant", dtype)
+            ast::Type::Record { is_union, fields, .. } => {
+                if *is_union {
+                    todo!("union initializer");
+                } else {
+                    let mut total = 0;
+                    for ((field_type, field_offset), field_init)
+                                        in fields.iter().zip(init.want_list()) {
+                        if *field_offset < total {
+                            // Output padding for alignment
+                            writeln!(self.output, "times {} db 0xCC", total - *field_offset).unwrap();
+                            total = *field_offset;
+                        }
+                        self.gen_static_init(field_type, field_init);
+                        total += field_type.get_size();
                     }
                 }
+            },
 
-                // Or by the address of another static
-                ast::Expr::Ref(expr) if let ast::Expr::Ident(ident) = &**expr
-                    => match &**dtype {
-                        // FIXME: check base type of pointer too
-                        ast::Type::Ptr {..} => writeln!(output, "dq {}", ident).unwrap(),
-                        _ => panic!("Non-pointer static initialized with pointer"),
-                    },
+            _ => {
+                match init.want_expr() {
+                    // Static can be initialized by a constant
+                    ast::Expr::Const(ctype, val) => {
+                        if dtype != ctype {
+                            panic!("Type mismatch for static initializer")
+                        }
 
-                _ => panic!("Non constant static initializer")
+                        match &**dtype {
+                            ast::Type::U8 | ast::Type::I8
+                                => writeln!(self.output, "db 0x{:X}", *val as u8).unwrap(),
+                            ast::Type::U16 | ast::Type::I16
+                                => writeln!(self.output, "dw 0x{:X}", *val as u16).unwrap(),
+                            ast::Type::U32 | ast::Type::I32
+                                => writeln!(self.output, "dd 0x{:X}", *val as u32).unwrap(),
+                            ast::Type::U64 | ast::Type::I64 | ast::Type::Ptr {..}
+                                => writeln!(self.output, "dq 0x{:X}", *val as u64).unwrap(),
+
+                            _ => panic!("Invalid type {:?} for constant", dtype)
+                        }
+                    }
+
+                    // Or by the address of another static
+                    ast::Expr::Ref(expr) if let ast::Expr::Ident(ident) = &**expr
+                        => match &**dtype {
+                            // FIXME: check base type of pointer too
+                            ast::Type::Ptr {..} => writeln!(self.output, "dq {}", ident).unwrap(),
+                            _ => panic!("Non-pointer static initialized with pointer"),
+                        },
+
+                    _ => panic!("Non constant static initializer")
+                }
+            }
+        }
+    }
+
+    // Generate all static initializers
+    fn gen_statics(&mut self) {
+        let mut bss = HashMap::new();
+
+        // Generate data
+        {
+            let mut total = 0;
+            writeln!(self.output, "section .data").unwrap();
+            for (name, def) in &self.file.statics {
+                match def.vis {
+                    ast::Vis::Export => self.exports.push(name.clone()),
+                    ast::Vis::Extern => self.externs.push(name.clone()),
+                    _ => (),
+                }
+
+                if let Some(init) = &def.init {
+                    // Generate padding for alignment
+                    let align = def.dtype.get_align();
+                    let offset = (total + align - 1) / align * align;
+                    if total < offset {
+                        writeln!(self.output, "times {} db 0xcc", offset - total).unwrap();
+                        total = offset;
+                    }
+                    // Generate static initializer in .data
+                    writeln!(self.output, "{}:", name).unwrap();
+                    self.gen_static_init(&def.dtype, init);
+                    total += def.dtype.get_size();
+                } else {
+                    // Take note for bss allocation later
+                    bss.insert(name.clone(), &def.dtype);
+                }
+            }
+        }
+
+        // Generate bss
+        {
+            let mut total = 0;
+            writeln!(self.output, "section .bss").unwrap();
+            for (name, dtype) in bss {
+                // Generate padding for alignment
+                let align = dtype.get_align();
+                let offset = (total + align - 1) / align * align;
+                if total < offset {
+                    writeln!(self.output, "resb {}", offset - total).unwrap();
+                    total = offset;
+                }
+                // Reserve space for un-initialzed object
+                writeln!(self.output, "{}: resb {}", name, dtype.get_size()).unwrap();
+                total += dtype.get_size();
             }
         }
     }
@@ -288,43 +370,13 @@ fn gen_func<T: std::io::Write>(file: &File, func: &Func, output: &mut T) {
 
 */
 
-pub fn gen_asm(input: &ast::File, output: &mut fs::File) {
-    let mut exports = Vec::new();
-    let mut externs = Vec::new();
+pub fn gen_asm(file: &ast::File, output: &mut fs::File) {
+    let mut gen = Gen::new(file, output);
 
-    let mut bss = HashMap::new();
-
-    // Generate data
-    writeln!(output, "section .data").unwrap();
-    for (_, cur_static) in &input.statics {
-        match cur_static.vis {
-            ast::Vis::Export => exports.push(cur_static.name.clone()),
-            ast::Vis::Extern => externs.push(cur_static.name.clone()),
-            _ => (),
-        };
-
-        match &cur_static.init {
-            // Generate static initializer in .data
-            Some(init) => {
-                writeln!(output, "{}:", cur_static.name).unwrap();
-                gen_static_init(&input, &cur_static.dtype, init, output);
-            },
-            // Take note for bss allocation later
-            None => {
-                bss.insert(cur_static.name.clone(),
-                    cur_static.dtype.get_size());
-            },
-        };
-    }
-
-    // Generate bss
-    writeln!(output, "section .bss").unwrap();
-    for (name, len) in bss {
-        writeln!(output, "{}: resb {}", name, len).unwrap();
-    }
+    gen.gen_statics();
 
     // Generate functions
-    // print_or_die!(output, "section .text");
+    // writeln!(output, "section .text");
 
     // for (_, func) in &input.funcs {
     //     match func.vis {
@@ -339,12 +391,12 @@ pub fn gen_asm(input: &ast::File, output: &mut fs::File) {
     // }
 
     // Generate markers
-    for exp in exports {
-        writeln!(output, "global {}", exp).unwrap();
-    }
-    for ext in externs {
-        writeln!(output, "extern {}", ext).unwrap();
-    }
+    // for exp in exports {
+    //     writeln!(output, "global {}", exp).unwrap();
+    // }
+    // for ext in externs {
+    //     writeln!(output, "extern {}", ext).unwrap();
+    // }
 }
 
 pub fn gen_obj(input: &ast::File, output: &mut fs::File) {

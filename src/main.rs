@@ -3,9 +3,8 @@
 #![feature(hash_set_entry)]
 #![feature(if_let_guard)]
 
-// mod gen;
 mod ast;
-mod il;
+mod gen;
 mod lex;
 
 use clap::{Arg,App};
@@ -23,7 +22,8 @@ fn main() {
             .short("o")
             .long("output")
             .value_name("OUTPUT")
-            .help("Output file (default is stdout)")
+            .help("Output file")
+            .required(true)
             .takes_value(true))
         .arg(Arg::with_name("assembly")
             .short("a")
@@ -31,27 +31,13 @@ fn main() {
             .help("Generate assembly instead of an object file"))
         .get_matches();
 
-    // Read input file contents
     let data = std::fs::read_to_string(args.value_of("INPUT").unwrap()).unwrap();
     let file = ast::parse_file(&data);
 
-    // for (_, func) in &file.funcs {
-    //     let il_func = il::Func::new(&file, &func);
-    //     println!("{:#?}", il_func);
-    // }
-
-    // Call generation function based on if assembly is wanted
-    // if args.occurrences_of("assembly") > 0 {
-    //     if let Some(path) = args.value_of("output") {
-    //         gen::gen_asm(&file, &mut std::fs::File::create(path).unwrap());
-    //     } else {
-    //         gen::gen_asm(&file, &mut std::io::stdout());
-    //     }
-    // } else {
-    //     if let Some(path) = args.value_of("output") {
-    //         gen::gen_obj(&file, &mut std::fs::File::create(path).unwrap());
-    //     } else {
-    //         gen::gen_obj(&file, &mut std::io::stdout());
-    //     }
-    // }
+    let path = args.value_of("output").unwrap();
+    if args.occurrences_of("assembly") > 0 {
+        gen::gen_asm(&file, &mut std::fs::File::create(path).unwrap());
+    } else {
+        gen::gen_obj(&file, &mut std::fs::File::create(path).unwrap());
+    }
 }
