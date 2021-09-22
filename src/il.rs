@@ -4,26 +4,21 @@
 // AST to IL conversion
 //
 
-use super::ast;
+use crate::ast;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 // Local variable
 #[derive(Debug)]
 struct Local {
-    used: bool,     // Ever used?
-    refed: bool,    // Address taken?
-    align: usize,   // Required alingment
+    name: Rc<str>,  // Variable name
     size: usize,    // Required size
 }
 
 impl Local {
-    fn new(dtype: &ast::Type) -> Local {
+    fn new(name: Rc<str>, dtype: &ast::Type) -> Local {
         Local {
-            used: false,
-            refed: false,
-            // FIXME: implement proper alingment
-            align: dtype.get_size(),
+            name: name,
             size: dtype.get_size(),
         }
     }
@@ -135,6 +130,13 @@ struct Resolv<'a> {
 }
 
 impl<'a> Resolv<'a> {
+    fn new(file: &'a ast::File) -> Resolv {
+        Resolv {
+            file: file,
+            locals: HashMap::new(),
+        }
+    }
+
     fn resolve_name(&self, name: &Rc<str>) -> (Rc<ast::Type>, LVal) {
         if let Some((dtype, local)) = self.locals.get(name) {
             (dtype.clone(), LVal::Local(local.clone()))
@@ -375,15 +377,13 @@ pub struct Func {
 impl Func {
     // Create a new IL function from an AST function
     pub fn new(ast_file: &ast::File, ast_func: &ast::Func) -> Func {
-        let mut res = Resolv {
-            file: ast_file,
-            locals: HashMap::new(),
-        };
+        let mut res = Resolv::new(ast_file);
         let mut ops = Vec::new();
 
         // Create locals for parameters
         for (name, dtype) in &ast_func.params {
-            res.locals.insert(name, (dtype.clone(), Rc::from(Local::new(dtype))));
+            res.locals.insert(name,
+                (dtype.clone(), Rc::from(Local::new(name.clone(), dtype))));
         }
 
         macro_rules! conv_jcc {
@@ -418,7 +418,7 @@ impl Func {
                     if let Some(_) = res.locals.get(name) {
                         panic!("Identifier {} already in use in the same scope", name)
                     }
-                    let local = Rc::from(Local::new(dtype));
+                    let local = Rc::from(Local::new(name.clone(), dtype));
                     if let Some(init) = maybe_init {
                         conv_init(dtype, LVal::Local(local.clone()), init, &mut res, &mut ops);
                     }

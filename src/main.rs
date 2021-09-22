@@ -3,11 +3,10 @@
 #![feature(hash_set_entry)]
 #![feature(if_let_guard)]
 
-mod ast;
 // mod gen;
+mod ast;
 mod il;
 mod lex;
-mod parser;
 
 use clap::{Arg,App};
 
@@ -34,12 +33,12 @@ fn main() {
 
     // Read input file contents
     let data = std::fs::read_to_string(args.value_of("INPUT").unwrap()).unwrap();
-    let file = parser::parse_file(&data);
+    let file = ast::parse_file(&data);
 
-    for (_, func) in &file.funcs {
-        let il_func = il::Func::new(&file, &func);
-        println!("{:#?}", il_func);
-    }
+    // for (_, func) in &file.funcs {
+    //     let il_func = il::Func::new(&file, &func);
+    //     println!("{:#?}", il_func);
+    // }
 
     // Call generation function based on if assembly is wanted
     // if args.occurrences_of("assembly") > 0 {
