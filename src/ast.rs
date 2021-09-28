@@ -4,9 +4,17 @@
 // Recursive descent parser for the grammer described in "grammar.txt"
 //
 
+#![macro_use]
+
 use crate::lex::{Lexer,Token};
 use std::collections::HashMap;
 use std::rc::Rc;
+
+macro_rules! round_up {
+    ($val:expr,$bound:expr) => {
+        ($val + $bound - 1) / $bound * $bound
+    }
+}
 
 //
 // Type system
@@ -35,10 +43,10 @@ pub enum Type {
     Record {
         // Was this declared as a union?
         is_union: bool,
-        // Field types (in order of declaration)
-        fields: Vec<(Rc<Type>, usize)>,
-        // Name to field index map
-        field_map: HashMap<Rc<str>, usize>,
+        // Name lookup table
+        lookup: HashMap<Rc<str>, usize>,
+        // Field types and offsets (in declaration order)
+        fields: Box<[(Rc<Type>, usize)]>,
         // Pre-calculated alingment and size
         align: usize,
         size: usize,
@@ -639,45 +647,31 @@ impl<'source> Parser<'source> {
     }
 
     fn want_record(&mut self, is_union: bool) -> Type {
+        let mut lookup = HashMap::new();
         let mut fields = Vec::new();
-        let mut field_map = HashMap::new();
-        let mut field_idx = 0;
-        let mut align = 0;
-        let mut size = 0;
+        let mut max_align = 0;
+        let mut offset = 0;
 
-        // Read fields until }
         want!(self, Token::LCurly, "Expected left curly");
 
+        // Read fields until }
         while !maybe_want!(self, Token::RCurly) {
-            let field_name = self.want_ident();
+            lookup.insert(self.want_ident(), fields.len());
             want!(self, Token::Colon, "Expected :");
-            let field_type = self.want_type();
 
+            let field_type = self.want_type();
             let field_align = field_type.get_align();
             let field_size = field_type.get_size();
 
-            // Total alignment is the greatest of all field alignemnts
-            if align < field_align {
-                align = field_align;
+            // Save maximum alignment of all fields
+            if max_align < field_align {
+                max_align = field_align;
             }
 
-            if is_union {
-                // All union fields start at offset 0
-                fields.push((field_type, 0));
-                // Union size is equal to the largest field's size
-                if size < field_size {
-                    size = field_size;
-                }
-            } else {
-                // Record field must be aligned to the correct alignment
-                size = (size + field_align - 1) / field_align * field_align;
-                fields.push((field_type, size));
-                size += field_size;
-            }
-
-            // Create name mapping for field
-            field_map.insert(field_name, field_idx);
-            field_idx += 1;
+            // Round field offset to correct alignment
+            offset = round_up!(offset, field_align);
+            fields.push((field_type, offset));
+            offset += field_size;
 
             if !maybe_want!(self, Token::Comma) {
                 want!(self, Token::RCurly, "Expected right curly");
@@ -690,10 +684,12 @@ impl<'source> Parser<'source> {
 
         Type::Record {
             is_union: is_union,
-            fields: fields,
-            field_map: field_map,
-            align: align,
-            size: size,
+            lookup: lookup,
+            fields: fields.into_boxed_slice(),
+            align: max_align,
+            // Round struct size to a multiple of it's alignment, this is needed
+            // if an array is ever created of this struct
+            size: round_up!(offset, max_align),
         }
     }
 
