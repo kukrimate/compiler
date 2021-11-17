@@ -7,6 +7,7 @@
 #![macro_use]
 
 use crate::lex::{Lexer,Token};
+use crate::gen::Gen;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -22,6 +23,7 @@ macro_rules! round_up {
 
 #[derive(Clone,Debug,PartialEq)]
 pub enum Type {
+    Void,
     U8,
     I8,
     U16,
@@ -32,11 +34,11 @@ pub enum Type {
     I64,
     Ptr {
         // What type does this point to?
-        base_type: Rc<Type>,
+        base_type: Box<Type>,
     },
     Array {
         // Type of array elements
-        elem_type: Rc<Type>,
+        elem_type: Box<Type>,
         // Number of array elements
         elem_count: usize,
     },
@@ -46,10 +48,15 @@ pub enum Type {
         // Name lookup table
         lookup: HashMap<Rc<str>, usize>,
         // Field types and offsets (in declaration order)
-        fields: Box<[(Rc<Type>, usize)]>,
+        fields: Box<[(Type, usize)]>,
         // Pre-calculated alingment and size
         align: usize,
         size: usize,
+    },
+    Func {
+        params: Box<[Type]>,
+        varargs: bool,
+        rettype: Box<Type>,
     },
 }
 
@@ -67,6 +74,7 @@ impl Type {
             Type::Ptr {..} => 8,
             Type::Array { elem_type, .. } => elem_type.get_align(),
             Type::Record { align, .. } => *align,
+            Type::Void | Type::Func {..} => unreachable!(),
         }
     }
 
@@ -84,6 +92,7 @@ impl Type {
             Type::Array { elem_type, elem_count }
                 => elem_type.get_size() * elem_count,
             Type::Record { size, .. } => *size,
+            Type::Void | Type::Func {..} => unreachable!(),
         }
     }
 }
@@ -95,9 +104,9 @@ impl Type {
 #[derive(Debug)]
 pub enum Expr {
     // Constant value
-    Const(Rc<Type>, usize),
-    // Identifier
-    Ident(Rc<str>),
+    Const(Type, usize),
+    // Reference to symbol
+    Sym(Rc<str>),
     // Pointer ref/deref
     Ref(Box<Expr>),
     Deref(Box<Expr>),
@@ -120,7 +129,7 @@ pub enum Expr {
     Lsh(Box<Expr>, Box<Expr>),
     Rsh(Box<Expr>, Box<Expr>),
     // Cast
-    Cast(Box<Expr>, Rc<Type>)
+    Cast(Box<Expr>, Type)
 }
 
 //
@@ -142,7 +151,7 @@ impl Expr {
         }
     }
 
-    pub fn make_cast(self, new_type: Rc<Type>) -> Expr {
+    pub fn make_cast(self, new_type: Type) -> Expr {
         match self {
             Expr::Const(_, val) => Expr::Const(new_type, val),
             expr => Expr::Cast(Box::from(expr), new_type)
@@ -262,6 +271,14 @@ impl Expr {
             expr1 => Expr::Or(Box::from(expr1), Box::from(expr2)),
         }
     }
+
+    pub fn want_const(&self) -> usize {
+        if let Expr::Const(_, val) = self {
+            *val
+        } else {
+            panic!("Expected constant expression")
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -271,14 +288,14 @@ pub enum Init {
 }
 
 impl Init {
-    pub fn want_expr(&self) -> &Expr {
+    pub fn want_expr(self) -> Expr {
         match self {
             Init::Base(expr) => expr,
             _ => panic!("Wanted bare initializer!"),
         }
     }
 
-    pub fn want_list(&self) -> &Vec<Init> {
+    pub fn want_list(self) -> Vec<Init> {
         match self {
             Init::List(list) => list,
             _ => panic!("Wanted initializer list!"),
@@ -290,7 +307,7 @@ impl Init {
 pub enum Stmt {
     Eval(Expr),
     Ret(Option<Expr>),
-    Auto(Rc<str>, Rc<Type>, Option<Init>),
+    Auto(Rc<str>, Type, Option<Init>),
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
@@ -309,58 +326,18 @@ pub enum Vis {
     Extern,     // External definition reference
 }
 
-#[derive(Debug)]
-pub struct Static {
-    // Visibility
-    pub vis: Vis,
-    // Type of static
-    pub dtype: Rc<Type>,
-    // Initializer (if present)
-    pub init: Option<Init>,
-}
-
-#[derive(Debug)]
-pub struct Func {
-    // Visibility
-    pub vis: Vis,
-    // Parameters
-    pub params: Vec<(Rc<str>, Rc<Type>)>,
-    pub varargs: bool,
-    // Return type
-    pub rettype: Option<Rc<Type>>,
-    // Statements
-    pub stmts: Vec<Stmt>,
-}
-
-#[derive(Debug)]
-pub struct File {
-    pub records: HashMap<Rc<str>, Rc<Type>>,
-    pub statics: HashMap<Rc<str>, Static>,
-    pub funcs: HashMap<Rc<str>, Func>,
-}
-
-impl File {
-    pub fn new() -> File {
-        File {
-            records: HashMap::new(),
-            statics: HashMap::new(),
-            funcs: HashMap::new(),
-        }
-    }
-}
-
 //
 // Parser context
 //
 
 struct Parser<'source> {
-    // Current file
-    file: File,
     // Lexer and temorary token
     tmp: Option<Token>,
     lex: &'source mut Lexer<'source>,
-    // Current string literal
-    litno: usize,
+    // Code generation backend
+    gen: &'source mut Gen,
+    // Currently defined record types
+    records: HashMap<Rc<str>, Type>,
 }
 
 macro_rules! want {
@@ -385,44 +362,17 @@ macro_rules! maybe_want {
 }
 
 impl<'source> Parser<'source> {
-    fn new(lex: &'source mut Lexer<'source>) -> Parser<'source> {
+    fn new(lex: &'source mut Lexer<'source>, gen: &'source mut Gen) -> Parser<'source> {
         Parser {
-            file: File::new(),
             tmp: lex.next(),
             lex: lex,
-            litno: 0,
+            gen: gen,
+            records: HashMap::new(),
         }
     }
 
     fn next_token(&mut self) -> Token {
         std::mem::replace(&mut self.tmp, self.lex.next()).unwrap()
-    }
-
-    // FIXME: take string literal type into account
-    fn make_string_lit(&mut self, _: Type, data: Rc<str>) -> Rc<str> {
-        // Create globally unique name for the literal
-        let name: Rc<str> = Rc::from(format!("_slit_{}", self.litno));
-        self.litno += 1;
-
-        // Create NUL-terminated initializer for the string
-        let mut list = Vec::new();
-        for b in data.as_bytes() {
-            list.push(Init::Base(Expr::Const(Rc::from(Type::U8), *b as usize)));
-        }
-        list.push(Init::Base(Expr::Const(Rc::from(Type::U8), 0)));
-
-        // Create static variable for it
-        self.file.statics.insert(name.clone(),
-            Static {
-                vis: Vis::Private,
-                dtype: Rc::from(Type::Array {
-                    elem_count: list.len(),
-                    elem_type: Rc::from(Type::U8),
-                }),
-                init: Some(Init::List(list)),
-            });
-
-        name
     }
 
     fn want_ident(&mut self) -> Rc<str> {
@@ -482,14 +432,16 @@ impl<'source> Parser<'source> {
                 want!(self, Token::RParen, "Missing )");
                 expr
             },
-            Token::Str(s) => {
-                let string_type = self.want_type_suffix();
-                // String literal becomes a pointer to a static
-                Expr::Ref(Box::from(
-                    Expr::Ident(self.make_string_lit(string_type, s))))
+            Token::Str(data) => {
+                let suffix = self.want_type_suffix();
+                let string_sym = Expr::Sym(self.gen.do_string(suffix, &*data));
+                // Replace string literal with reference to internal symbol
+                Expr::Ref(Box::from(string_sym))
             },
-            Token::Ident(s) => Expr::Ident(s),
-            Token::Constant(val) => Expr::Const(Rc::from(self.want_type_suffix()), val),
+            Token::Ident(s)
+                => Expr::Sym(s),
+            Token::Constant(val)
+                => Expr::Const(self.want_type_suffix(), val),
             _ => panic!("Invalid constant value!"),
         }
     }
@@ -537,7 +489,7 @@ impl<'source> Parser<'source> {
     fn want_cast(&mut self) -> Expr {
         let expr = self.want_unary();
         if maybe_want!(self, Token::Cast) {
-            expr.make_cast(Rc::from(self.want_type()))
+            expr.make_cast(self.want_type())
         } else {
             expr
         }
@@ -609,8 +561,8 @@ impl<'source> Parser<'source> {
         self.want_or()
     }
 
-    fn want_type(&mut self) -> Rc<Type> {
-        Rc::from(match self.next_token() {
+    fn want_type(&mut self) -> Type {
+        match self.next_token() {
             Token::U8   => Type::U8,
             Token::I8   => Type::I8,
             Token::U16  => Type::U16,
@@ -620,15 +572,15 @@ impl<'source> Parser<'source> {
             Token::U64  => Type::U64,
             Token::I64  => Type::I64,
             Token::Mul  => Type::Ptr {
-                base_type: self.want_type()
+                base_type: Box::new(self.want_type())
             },
             Token::LSq  => {
-                let elem_type = Rc::from(self.want_type());
+                let elem_type = self.want_type();
                 want!(self, Token::Semicolon, "Expected ;");
                 let elem_count_expr = self.want_expr();
                 want!(self, Token::RSq, "Expected ]");
                 Type::Array {
-                    elem_type: elem_type,
+                    elem_type: Box::new(elem_type),
                     elem_count: match elem_count_expr {
                         Expr::Const(_, val) => val,
                         _ => panic!("Array element count must be constnat"),
@@ -636,14 +588,14 @@ impl<'source> Parser<'source> {
                 }
             },
             Token::Ident(ref ident) => {
-                if let Some(record) = self.file.records.get(ident) {
+                if let Some(record) = self.records.get(ident) {
                     return record.clone();
                 } else {
                     panic!("Non-existent type {}", ident)
                 }
             },
             _ => panic!("Invalid typename!"),
-        })
+        }
     }
 
     fn want_record(&mut self, is_union: bool) -> Type {
@@ -728,7 +680,7 @@ impl<'source> Parser<'source> {
                 if maybe_want!(self, Token::Eq) {
                     init = Some(self.want_initializer());
                 }
-                Stmt::Auto(ident, Rc::from(dtype), init)
+                Stmt::Auto(ident, dtype, init)
             },
             Token::Label(s) => Stmt::Label(s),
             Token::Set      => {
@@ -795,29 +747,25 @@ impl<'source> Parser<'source> {
                 Token::Record => {
                     let name = self.want_ident();
                     let record = self.want_record(false);
-                    self.file.records.insert(name, Rc::from(record));
+                    self.records.insert(name, record);
                 },
                 Token::Union => {
                     let name = self.want_ident();
                     let union = self.want_record(true);
-                    self.file.records.insert(name, Rc::from(union));
+                    self.records.insert(name, union);
                 },
                 Token::Static => {
                     let vis = self.maybe_want_vis();
                     let name = self.want_ident();
                     want!(self, Token::Colon, "Expected :");
                     let dtype = self.want_type();
-                    let mut init = None;
                     if maybe_want!(self, Token::Eq) {
-                        init = Some(self.want_initializer());
+                        let init = self.want_initializer();
+                        self.gen.do_static_init(vis, name, dtype, init);
+                    } else {
+                        self.gen.do_static(vis, name, dtype);
                     }
                     want!(self, Token::Semicolon, "Expected ;");
-
-                    self.file.statics.insert(name, Static {
-                        vis: vis,
-                        dtype: Rc::from(dtype),
-                        init: init
-                    });
                 },
                 Token::Fn => {
                     let vis = self.maybe_want_vis();
@@ -825,7 +773,8 @@ impl<'source> Parser<'source> {
 
                     let mut params = Vec::new();
                     let mut varargs = false;
-                    let mut stmts = Vec::new();
+
+                    let mut param_tab = Vec::new();
 
                     // Read parameters
                     want!(self, Token::LParen, "Expected (");
@@ -839,35 +788,39 @@ impl<'source> Parser<'source> {
                         // Otherwise try reading a normal parameter
                         let param_name = self.want_ident();
                         want!(self, Token::Colon, "Expected :");
-                        params.push((param_name, self.want_type()));
+                        let param_type = self.want_type();
+                        params.push(param_type.clone());
+                        param_tab.push((param_name, param_type));
                         if !maybe_want!(self, Token::Comma) {
                             want!(self, Token::RParen, "Expected )");
                             break;
                         }
                     }
 
-                    // Read return type (if any)
+                    // Read return type (or set to void)
                     let rettype = if maybe_want!(self, Token::Arrow) {
-                        Some(self.want_type())
+                        self.want_type()
                     } else {
-                        None
+                        Type::Void
                     };
 
+                    // Create symbol for function
+                    self.gen.do_sym(vis, name.clone(), Type::Func {
+                        params: params.into(),
+                        varargs: varargs,
+                        rettype: Box::new(rettype),
+                    });
+
                     // Read body (if present)
+                    let mut stmts = Vec::new();
                     if !maybe_want!(self, Token::Semicolon) {
                         want!(self, Token::LCurly, "Expected left curly");
                         while !maybe_want!(self, Token::RCurly) {
                             stmts.push(self.want_stmt());
                         }
+                        // Generate body
+                        self.gen.do_func(name, param_tab, stmts);
                     }
-
-                    self.file.funcs.insert(name, Func {
-                        vis: vis,
-                        params: params,
-                        varargs: varargs,
-                        rettype: rettype,
-                        stmts: stmts,
-                    });
                 },
                 _ => panic!("Expected record, union, static or function!"),
             }
@@ -875,9 +828,8 @@ impl<'source> Parser<'source> {
     }
 }
 
-pub fn parse_file(data: &str) -> File {
+pub fn parse_file(data: &str, gen: &mut Gen) {
     let mut lexer = Lexer::new(data);
-    let mut parser = Parser::new(&mut lexer);
+    let mut parser = Parser::new(&mut lexer, gen);
     parser.process();
-    parser.file
 }

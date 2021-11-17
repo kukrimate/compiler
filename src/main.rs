@@ -8,6 +8,19 @@ mod gen;
 mod lex;
 
 use clap::{Arg,App};
+use std::process::Command;
+use tempfile::NamedTempFile;
+
+fn assemble(asm_path: &str, obj_path: &str) {
+    let status = Command::new("nasm")
+        .args(["-f", "elf64", "-o", obj_path, asm_path])
+        .status()
+        .expect("failed to run nasm");
+
+    if !status.success() {
+        panic!("assembly with nasm failed");
+    }
+}
 
 fn main() {
     let args = App::new("compiler")
@@ -32,12 +45,19 @@ fn main() {
         .get_matches();
 
     let data = std::fs::read_to_string(args.value_of("INPUT").unwrap()).unwrap();
-    let file = ast::parse_file(&data);
+    let mut output_path = args.value_of("output").unwrap();
 
-    let path = args.value_of("output").unwrap();
+    let mut gen = gen::Gen::new();
+    ast::parse_file(&data, &mut gen);
+
     if args.occurrences_of("assembly") > 0 {
-        gen::gen_asm(&file, &mut std::fs::File::create(path).unwrap());
+        // Just write assembly to output
+        gen.finalize(&mut std::fs::File::create(output_path).unwrap());
     } else {
-        gen::gen_obj(&file, &mut std::fs::File::create(path).unwrap());
+        // Write assembly to tempfile
+        let mut asm_file = NamedTempFile::new().unwrap();
+        gen.finalize(&mut asm_file);
+        // Call nasm to assemble
+        assemble(asm_file.path().to_str().unwrap(), output_path);
     }
 }

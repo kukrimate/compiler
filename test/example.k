@@ -12,7 +12,6 @@ union $b {
 };
 
 static $global_5: u8 = 5 u8;
-static $global_5_2: u8 = $global_5;
 static $global_5_ptr: *u8 = &$global_5;
 
 static $mystring: *u8 = "mystring"u8;
