@@ -80,7 +80,7 @@ fn main() {
             assemble(asm_file.path().to_str().unwrap(), output_path);
         } else {
             // Assembly to tempfile than link
-            let mut obj_file = NamedTempFile::new().unwrap();
+            let obj_file = NamedTempFile::new().unwrap();
             assemble(asm_file.path().to_str().unwrap(),
                         obj_file.path().to_str().unwrap());
             link(obj_file.path().to_str().unwrap(), output_path);

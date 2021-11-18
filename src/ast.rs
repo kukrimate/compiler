@@ -23,7 +23,8 @@ macro_rules! round_up {
 
 #[derive(Clone,Debug,PartialEq)]
 pub enum Type {
-    Void,
+    Void,   // Non-existent value
+    Deduce, // Deduce type from context
     U8,
     I8,
     U16,
@@ -74,7 +75,8 @@ impl Type {
             Type::Ptr {..} => 8,
             Type::Array { elem_type, .. } => elem_type.get_align(),
             Type::Record { align, .. } => *align,
-            Type::Void | Type::Func {..} => unreachable!(),
+            Type::Void | Type::Deduce | Type::Func {..}
+                => unreachable!(),
         }
     }
 
@@ -92,7 +94,23 @@ impl Type {
             Type::Array { elem_type, elem_count }
                 => elem_type.get_size() * elem_count,
             Type::Record { size, .. } => *size,
-            Type::Void | Type::Func {..} => unreachable!(),
+            Type::Void | Type::Deduce | Type::Func {..}
+                => unreachable!(),
+        }
+    }
+
+    pub fn do_deduce(dtype1: Type, dtype2: Type) -> Type {
+        match (dtype1, dtype2) {
+            (Type::Deduce, Type::Deduce)
+                => panic!("Cannot deduce type, be more specific"),
+            (dtype, Type::Deduce) | (Type::Deduce, dtype)
+                => dtype,
+            (dtype1, dtype2) => {
+                if dtype1 != dtype2 {
+                    panic!("Incompatible types {:?}, {:?}", dtype1, dtype2)
+                }
+                dtype1
+            }
         }
     }
 }
@@ -412,17 +430,21 @@ impl<'source> Parser<'source> {
     }
 
     fn want_type_suffix(&mut self) -> Type {
-        match self.next_token() {
-            Token::U8   => Type::U8,
-            Token::I8   => Type::I8,
-            Token::U16  => Type::U16,
-            Token::I16  => Type::I16,
-            Token::U32  => Type::U32,
-            Token::I32  => Type::I32,
-            Token::U64  => Type::U64,
-            Token::I64  => Type::I64,
-            _ => panic!("Invalid type suffix!"),
-        }
+        // Match for type suffix
+        let suf = match self.tmp {
+            Some(Token::U8)   => Type::U8,
+            Some(Token::I8)   => Type::I8,
+            Some(Token::U16)  => Type::U16,
+            Some(Token::I16)  => Type::I16,
+            Some(Token::U32)  => Type::U32,
+            Some(Token::I32)  => Type::I32,
+            Some(Token::U64)  => Type::U64,
+            Some(Token::I64)  => Type::I64,
+            _ => return Type::Deduce,
+        };
+        // Replace temporary token if matched
+        self.tmp = self.lex.next();
+        suf
     }
 
     fn want_primary(&mut self) -> Expr {
@@ -705,8 +727,11 @@ impl<'source> Parser<'source> {
             },
             Token::Auto     => {
                 let ident = self.want_ident();
-                want!(self, Token::Colon, "Expected :");
-                let dtype = self.want_type();
+                let dtype = if maybe_want!(self, Token::Colon) {
+                    self.want_type()
+                } else {
+                    Type::Deduce
+                };
                 let mut init = None;
                 if maybe_want!(self, Token::Eq) {
                     init = Some(self.want_initializer());
@@ -839,7 +864,7 @@ impl<'source> Parser<'source> {
                     self.gen.do_sym(vis, name.clone(), Type::Func {
                         params: params.into(),
                         varargs: varargs,
-                        rettype: Box::new(rettype),
+                        rettype: Box::new(rettype.clone()),
                     });
 
                     // Read body (if present)
@@ -850,7 +875,7 @@ impl<'source> Parser<'source> {
                             stmts.push(self.want_stmt());
                         }
                         // Generate body
-                        self.gen.do_func(name, param_tab, stmts);
+                        self.gen.do_func(name, rettype, param_tab, stmts);
                     }
                 },
                 _ => panic!("Expected record, union, static or function!"),

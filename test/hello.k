@@ -1,10 +1,10 @@
-// Libc function
-fn extern $puts($str: *u8) -> i32;
+fn extern puts(str: *u8) -> i32;
 
-// Entry point
-fn export $main($argc: i32, $argv: **u8) -> i32 {
-    auto $puts_ptr: *fn(*u8) -> i32 = &$puts;
-
-    eval (*$puts_ptr)("Hello World!" u8);
+fn export main(argc: i32, argv: **u8) -> i32 {
+    // Print with a direct call
+    eval puts("Hello World!");
+    // Print using a function pointer
+    auto puts_ptr: *fn(*u8)->i32 = &puts;
+    eval (*puts_ptr)("Hello World!");
     ret 0i32;
 }

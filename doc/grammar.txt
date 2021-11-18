@@ -102,9 +102,9 @@
                        | <postfix-expression> . <identifier>
 
 <primary-expression> ::= ( <expression> )
-                       | <string-literal> <type-suffix>
-                       | <integer-constant> <type-suffix>
-                       | <char-constant> <type-suffix>
+                       | <string-literal> [<type-suffix>]
+                       | <integer-constant> [<type-suffix>]
+                       | <char-constant> [<type-suffix>]
                        | <identifier>
 
 <type-suffix> ::= u8

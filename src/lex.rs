@@ -80,10 +80,6 @@ fn str(lex: &mut Lexer) -> Rc<str> {
     symtab_put(&s[1..s.len() - 1])
 }
 
-fn ident(lex: &mut Lexer) -> Rc<str> {
-    symtab_put(&lex.slice()[1..])
-}
-
 #[derive(logos::Logos, Debug)]
 pub enum Token {
     // Typenames
@@ -133,10 +129,11 @@ pub enum Token {
     #[regex(r#""(\\.|[^\\"])*""#, str)]
     Str(Rc<str>),
 
-    // Indentifiers, labels
-    #[regex(r"\$[a-zA-Z_][a-zA-Z0-9_]*", ident)]
+    // Indentifiers
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| symtab_put(lex.slice()))]
     Ident(Rc<str>),
-    #[regex(r"@[a-zA-Z_][a-zA-Z0-9_]*", ident)]
+    // Labels
+    #[regex(r"@[a-zA-Z_][a-zA-Z0-9_]*", |lex| symtab_put(&lex.slice()[1..]))]
     Label(Rc<str>),
 
     // Symbols
