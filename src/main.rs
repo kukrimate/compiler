@@ -22,6 +22,20 @@ fn assemble(asm_path: &str, obj_path: &str) {
     }
 }
 
+fn link(obj_path: &str, exe_path: &str) {
+    // NOTE: C compiler is obviously only used for linking
+    // we are not compiling C here, but we do want to link against libc
+    // and the C startup files
+    let status = Command::new("cc")
+        .args(["-no-pie", "-o", exe_path, obj_path])
+        .status()
+        .expect("failed to run cc");
+
+    if !status.success() {
+        panic!("linking failed");
+    }
+}
+
 fn main() {
     let args = App::new("compiler")
         .version("1.0.0")
@@ -42,6 +56,10 @@ fn main() {
             .short("a")
             .long("assembly")
             .help("Generate assembly instead of an object file"))
+        .arg(Arg::with_name("compile")
+            .short("c")
+            .long("compile")
+            .help("Generate an object file instead of an executable"))
         .get_matches();
 
     let data = std::fs::read_to_string(args.value_of("INPUT").unwrap()).unwrap();
@@ -57,7 +75,15 @@ fn main() {
         // Write assembly to tempfile
         let mut asm_file = NamedTempFile::new().unwrap();
         gen.finalize(&mut asm_file);
-        // Call nasm to assemble
-        assemble(asm_file.path().to_str().unwrap(), output_path);
+        if args.occurrences_of("compile") > 0 {
+            // Assemble to output directly
+            assemble(asm_file.path().to_str().unwrap(), output_path);
+        } else {
+            // Assembly to tempfile than link
+            let mut obj_file = NamedTempFile::new().unwrap();
+            assemble(asm_file.path().to_str().unwrap(),
+                        obj_file.path().to_str().unwrap());
+            link(obj_file.path().to_str().unwrap(), output_path);
+        }
     }
 }
