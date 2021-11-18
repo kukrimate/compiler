@@ -29,12 +29,12 @@ enum Reg {
     Rdi = 5,
     R8  = 6,
     R9  = 7,
-    R10 = 8,
+    /*R10 = 8,
     R11 = 9,
     R12 = 10,
     R13 = 11,
     R14 = 12,
-    R15 = 13,
+    R15 = 13,*/
 }
 
 impl Reg {
@@ -57,7 +57,6 @@ impl Reg {
     }
 }
 
-const ACCUM: Reg = Reg::Rax;
 const PARAMS: [Reg; 6] = [ Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9 ];
 
 enum SymKind {
@@ -146,10 +145,12 @@ impl SymTab {
 // Promise for a runtime value
 //
 
+#[derive(Clone)]
 enum Val {
-    Imm(Type, usize),           // Immediate constant
-    Off(Type, usize),           // Reference to stack
-    Sym(Type, Rc<str>, usize),  // Reference to symbol
+    Imm(Type, usize),               // Immediate constant
+    Off(Type, usize),               // Reference to stack
+    Sym(Type, Rc<str>, usize),      // Reference to symbol
+    Deref(Type, Box<Val>, usize),   // De-reference of pointer
 }
 
 impl Val {
@@ -158,6 +159,7 @@ impl Val {
             Val::Imm(dtype, _) => dtype,
             Val::Off(dtype, _) => dtype,
             Val::Sym(dtype, _, _) => dtype,
+            Val::Deref(dtype, _, _) => dtype,
         }
     }
 
@@ -166,23 +168,29 @@ impl Val {
             Val::Imm(dtype, _) => &dtype,
             Val::Off(dtype, _) => &dtype,
             Val::Sym(dtype, _, _) => &dtype,
+            Val::Deref(dtype, _, _) => &dtype,
         }
     }
 
-    fn ptr_to_reg(self, text: &mut String, reg: Reg) -> Type {
+    fn ptr_to_reg(&self, text: &mut String, reg: Reg) {
+        let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
         match self {
             Val::Imm(_, _) => panic!("Cannot take address of immediate"),
             Val::Off(dtype, offset) => {
-                let ptr_type = Type::Ptr { base_type: Box::new(dtype) };
                 writeln!(text, "lea {}, [rsp + {}]",
-                    reg.to_str(&ptr_type), offset).unwrap();
-                ptr_type
+                    reg.to_str(&void_ptr), offset).unwrap();
             },
             Val::Sym(dtype, name, offset) => {
-                let ptr_type = Type::Ptr { base_type: Box::new(dtype) };
                 writeln!(text, "lea {}, [{} + {}]",
-                    reg.to_str(&ptr_type), name, offset).unwrap();
-                ptr_type
+                    reg.to_str(&void_ptr), name, offset).unwrap();
+            },
+            Val::Deref(_, ptr, offset) => {
+                ptr.val_to_reg(text, reg);
+                if *offset > 0 {
+                    writeln!(text, "lea {}, [{} + {}]",
+                        reg.to_str(&void_ptr), reg.to_str(&void_ptr), offset)
+                    .unwrap();
+                }
             },
         }
     }
@@ -195,10 +203,15 @@ impl Val {
                 => writeln!(text, "mov {}, [rsp + {}]", reg.to_str(dtype), offset).unwrap(),
             Val::Sym(dtype, name, offset)
                 => writeln!(text, "mov {}, [{} + {}]", reg.to_str(dtype), name, offset).unwrap(),
+            Val::Deref(dtype, ptr, offset) => {
+                ptr.val_to_reg(text, reg);
+                writeln!(text, "mov {}, [{} + {}]",
+                    reg.to_str(dtype), reg.to_str(ptr.ref_type()), offset).unwrap();
+            },
         }
     }
 
-    fn set_from_reg(&self, text: &mut String, reg: Reg) {
+    fn set_from_reg(&self, text: &mut String, reg: Reg, tmp_reg: Reg) {
         match self {
             Val::Imm(dtype, val)
                 => writeln!(text, "mov {}, {}", val, reg.to_str(dtype)).unwrap(),
@@ -206,8 +219,29 @@ impl Val {
                 => writeln!(text, "mov [rsp + {}], {}", offset, reg.to_str(dtype)).unwrap(),
             Val::Sym(dtype, name, offset)
                 => writeln!(text, "mov [{} + {}], {}", name, offset, reg.to_str(dtype)).unwrap(),
+            Val::Deref(dtype, ptr, offset) => {
+                ptr.val_to_reg(text, tmp_reg);
+                writeln!(text, "mov [{} + {}], {}",
+                    tmp_reg.to_str(ptr.ref_type()), offset, reg.to_str(dtype)).unwrap();
+            },
         }
     }
+
+    fn with_type_offset(&self, new_type: Type, add: usize) -> Val {
+        match self {
+            Val::Imm(_, _) => panic!("Offset from immediate"),
+            Val::Off(_, offset) => Val::Off(new_type, offset + add),
+            Val::Sym(_, name, offset) => Val::Sym(new_type, name.clone(), offset + add),
+            Val::Deref(_, ptr, offset) => Val::Deref(new_type, ptr.clone(), offset + add),
+        }
+    }
+}
+
+fn alloc_temporary(frame_size: &mut usize, dtype: Type) -> Val {
+    // FIXME: align temporary
+    let offset = *frame_size;
+    *frame_size += dtype.get_size();
+    Val::Off(dtype, offset)
 }
 
 pub struct Gen {
@@ -314,15 +348,49 @@ impl Gen {
         self.do_sym(vis, name, dtype);
     }
 
+    fn gen_unary(&mut self, frame_size: &mut usize, code: &mut String, op: &str, expr: Expr) -> Val {
+        let expr_val = self.gen_expr(frame_size, code, expr);
+        expr_val.val_to_reg(code, Reg::Rax);
+        writeln!(code, "{} {}", op, Reg::Rax.to_str(expr_val.ref_type())).unwrap();
+        let result = alloc_temporary(frame_size, expr_val.get_type());
+        result.set_from_reg(code, Reg::Rax, Reg::Rbx);
+        result
+    }
+
+    fn gen_binary(&mut self, frame_size: &mut usize, code: &mut String, op: &str, lhs: Expr, rhs: Expr) -> Val {
+        // Evaluate operands
+        let lhs_val = self.gen_expr(frame_size, code, lhs);
+        lhs_val.val_to_reg(code, Reg::Rax);
+        let rhs_val = self.gen_expr(frame_size, code, rhs);
+        rhs_val.val_to_reg(code, Reg::Rbx);
+        // Do operation
+        let result_type = lhs_val.get_type();
+        writeln!(code, "{} {}, {}", op,
+            Reg::Rax.to_str(&result_type),
+            Reg::Rbx.to_str(&result_type)).unwrap();
+        // Save result to temporary
+        let result = alloc_temporary(frame_size, result_type);
+        result.set_from_reg(code, Reg::Rax, Reg::Rbx);
+        result
+    }
+
+    fn gen_shift(&mut self, frame_size: &mut usize, code: &mut String, op: &str, lhs: Expr, rhs: Expr) -> Val {
+        // Evaluate operands
+        let lhs_val = self.gen_expr(frame_size, code, lhs);
+        lhs_val.val_to_reg(code, Reg::Rax);
+        let rhs_val = self.gen_expr(frame_size, code, rhs);
+        rhs_val.val_to_reg(code, Reg::Rcx);
+        // Do operation
+        let result_type = lhs_val.get_type();
+        writeln!(code, "{} {}, cl", op,
+            Reg::Rax.to_str(&result_type)).unwrap();
+        // Save result to temporary
+        let result = alloc_temporary(frame_size, result_type);
+        result.set_from_reg(code, Reg::Rax, Reg::Rbx);
+        result
+    }
+
     fn gen_expr(&mut self, frame_size: &mut usize, code: &mut String, expr: Expr) -> Val {
-
-        fn alloc_temporary(frame_size: &mut usize, dtype: Type) -> Val {
-            // FIXME: align temporary
-            let offset = *frame_size;
-            *frame_size += dtype.get_size();
-            Val::Off(dtype, offset)
-        }
-
         match expr {
             // Constant value
             Expr::Const(dtype, val) => Val::Imm(dtype, val),
@@ -332,63 +400,88 @@ impl Gen {
                 match sym.kind {
                     SymKind::Global(_)
                         => Val::Sym(sym.dtype.clone(), name, 0),
-                    SymKind::Param(index)
-                        => todo!(),
+                    SymKind::Param(_)
+                        => todo!("Access parameters"),
                     SymKind::Local(offset)
                         => Val::Off(sym.dtype.clone(), offset),
                 }
             },
+
             // Pointer ref/deref
             Expr::Ref(base) => {
                 // Save address to rax
                 let base_val = self.gen_expr(frame_size, code, *base);
-                let ptr_type = base_val.ptr_to_reg(code, ACCUM);
+                base_val.ptr_to_reg(code, Reg::Rax);
                 // Save pointer to temporary
-                let ptr_val = alloc_temporary(frame_size, ptr_type);
-                ptr_val.set_from_reg(code, ACCUM);
+                let ptr_val = alloc_temporary(frame_size,
+                    Type::Ptr { base_type: Box::new(base_val.get_type()) });
+                ptr_val.set_from_reg(code, Reg::Rax, Reg::Rbx);
                 ptr_val
             },
             Expr::Deref(ptr) => {
-                // Move pointer value to rax
                 let ptr_val = self.gen_expr(frame_size, code, *ptr);
-                ptr_val.val_to_reg(code, ACCUM);
-                let ptr_type = ptr_val.get_type();
-                let ptr_reg = ACCUM.to_str(&ptr_type);
-                // Read from pointer
-                if let Type::Ptr { base_type } = ptr_type {
-                    // Dereference pointer in rax
-                    writeln!(code, "mov {}, [{}]",
-                        ACCUM.to_str(&*base_type), ptr_reg).unwrap();
-                    // Write dereferenced value to temporary
-                    let base_val = alloc_temporary(frame_size, *base_type);
-                    base_val.set_from_reg(code, ACCUM);
-                    base_val
+                if let Type::Ptr { base_type } = ptr_val.ref_type() {
+                    Val::Deref(*base_type.clone(), Box::new(ptr_val), 0)
                 } else {
-                    panic!("Derefernced non-pointer type")
+                    panic!("De-referenced non-pointer type")
                 }
             },
+
             // Unary operations
-            Expr::Inv(expr) => todo!(),
-            Expr::Neg(expr) => todo!(),
+            Expr::Inv(expr)
+                => self.gen_unary(frame_size, code, "not", *expr),
+            Expr::Neg(expr)
+                => self.gen_unary(frame_size, code, "neg", *expr),
+
             // Postfix expressions
-            Expr::Field(expr, name) => todo!(),
-            Expr::Elem(expr, index) => todo!(),
-            Expr::Call(func, args) => {
-                // FIXME: this is very ugly
-                let (name, varargs, rettype) = if let Expr::Sym(name) = *func {
-                    let sym = self.symtab.lookup(&name);
-                    if let SymKind::Global(_) = sym.kind {
-                        if let Type::Func { params, varargs, rettype } = &sym.dtype {
-                            (name, *varargs, *rettype.clone())
-                        } else {
-                            panic!("Non callable object called")
-                        }
-                    } else {
-                        panic!("Non callable object called")
-                    }
+            Expr::Field(record, field) => {
+                let record_val = self.gen_expr(frame_size, code, *record);
+                let (dtype, offset) = if let Type::Record
+                        { fields, lookup, .. } = record_val.ref_type() {
+                    let idx = lookup.get(&field)
+                        .expect(&format!("Non-existent record field {}", field));
+                    fields[*idx].clone()
                 } else {
-                    panic!("Non callable object called")
+                    panic!("Field access of non-record type")
                 };
+                record_val.with_type_offset(dtype, offset)
+            },
+            Expr::Elem(array, index) => {
+                // Generate array
+                let array_val = self.gen_expr(frame_size, code, *array);
+                let (elem_type, elem_count) = if let Type::Array
+                        { elem_type, elem_count } = array_val.ref_type() {
+                    (*elem_type.clone(), *elem_count)
+                } else {
+                    panic!("Indexed non-array type")
+                };
+                // Generate index
+                let index_val = self.gen_expr(frame_size, code, *index);
+
+                if let Val::Imm(_, val) = index_val {
+                    if val >= elem_count {
+                        panic!("Out of bounds array index")
+                    }
+                    // Constant index is cheaper
+                    array_val.with_type_offset(elem_type, val)
+                } else {
+                    // Generate a de-reference lvalue from a pointer to the element
+                    array_val.ptr_to_reg(code, Reg::Rax);
+                    index_val.val_to_reg(code, Reg::Rbx);
+                    writeln!(code, "imul rbx, {}\nadd rax, rbx",
+                        elem_type.get_size()).unwrap();
+
+                    // Allocate temporary
+                    let ptr_type = Type::Ptr {
+                        base_type: Box::new(elem_type.clone()) };
+                    let ptr_val = alloc_temporary(frame_size, ptr_type);
+                    ptr_val.set_from_reg(code, Reg::Rax, Reg::Rbx);
+                    Val::Deref(elem_type.clone(), Box::new(ptr_val), 0)
+                }
+            },
+            Expr::Call(func, args) => {
+                // Evaluate called expression
+                let func_val = self.gen_expr(frame_size, code, *func);
 
                 // Move arguments to registers
                 // FIXME: more than 6 arguments
@@ -397,60 +490,55 @@ impl Gen {
                     arg_val.val_to_reg(code, reg);
                 }
 
+                // Move function address to rax
+                func_val.ptr_to_reg(code, Reg::Rbx);
+                // Verify type is actually a function
+                let (varargs, rettype) = if let Type::Func
+                        { varargs, rettype, .. } = func_val.get_type() {
+                    (varargs, *rettype)
+                } else {
+                    panic!("Non-function object called")
+                };
+
                 // Generate call
+                // FIXME: direct call to label should not be indirect
                 if varargs {
                     writeln!(code, "xor eax, eax").unwrap();
                 }
-                writeln!(code, "call {}", name).unwrap();
+                writeln!(code, "call rbx").unwrap();
 
                 // Move return value to temporary
                 let ret_val = alloc_temporary(frame_size, rettype);
-                ret_val.set_from_reg(code, Reg::Rax);
+                ret_val.set_from_reg(code, Reg::Rax, Reg::Rbx);
                 ret_val
             },
+
             // Binary operations
-            Expr::Add(lhs, rhs) => {
-                // Evaluate operands
-                let lhs_val = self.gen_expr(frame_size, code, *lhs);
-                lhs_val.val_to_reg(code, Reg::Rax);
-                let rhs_val = self.gen_expr(frame_size, code, *rhs);
-                rhs_val.val_to_reg(code, Reg::Rbx);
-                // Do operation
-                let result_type = lhs_val.get_type();
-                writeln!(code, "add {}, {}",
-                    Reg::Rax.to_str(&result_type),
-                    Reg::Rbx.to_str(&result_type)).unwrap();
-                // Save result to temporary
-                let result = alloc_temporary(frame_size, result_type);
-                result.set_from_reg(code, Reg::Rax);
-                result
-            },
-            Expr::Sub(lhs, rhs) => {
-                // Evaluate operands
-                let lhs_val = self.gen_expr(frame_size, code, *lhs);
-                lhs_val.val_to_reg(code, Reg::Rax);
-                let rhs_val = self.gen_expr(frame_size, code, *rhs);
-                rhs_val.val_to_reg(code, Reg::Rbx);
-                // Do operation
-                let result_type = lhs_val.get_type();
-                writeln!(code, "sub {}, {}",
-                    Reg::Rax.to_str(&result_type),
-                    Reg::Rbx.to_str(&result_type)).unwrap();
-                // Save result to temporary
-                let result = alloc_temporary(frame_size, result_type);
-                result.set_from_reg(code, Reg::Rax);
-                result
-            },
-            Expr::Mul(lhs, rhs) => todo!(),
+            Expr::Add(lhs, rhs)
+                => self.gen_binary(frame_size, code, "add", *lhs, *rhs),
+            Expr::Sub(lhs, rhs)
+                => self.gen_binary(frame_size, code, "sub", *lhs, *rhs),
+            Expr::Mul(lhs, rhs)
+                => self.gen_binary(frame_size, code, "imul", *lhs, *rhs),
             Expr::Div(lhs, rhs) => todo!(),
             Expr::Rem(lhs, rhs) => todo!(),
-            Expr::Or(lhs, rhs) => todo!(),
-            Expr::And(lhs, rhs) => todo!(),
-            Expr::Xor(lhs, rhs) => todo!(),
-            Expr::Lsh(lhs, rhs) => todo!(),
-            Expr::Rsh(lhs, rhs) => todo!(),
+            Expr::Or(lhs, rhs)
+                => self.gen_binary(frame_size, code, "or", *lhs, *rhs),
+            Expr::And(lhs, rhs)
+                => self.gen_binary(frame_size, code, "and", *lhs, *rhs),
+            Expr::Xor(lhs, rhs)
+                => self.gen_binary(frame_size, code, "xor", *lhs, *rhs),
+            Expr::Lsh(lhs, rhs)
+                => self.gen_shift(frame_size, code, "shl", *lhs, *rhs),
+            Expr::Rsh(lhs, rhs)
+                => self.gen_shift(frame_size, code, "shr", *lhs, *rhs),
+
             // Cast
-            Expr::Cast(expr, dtype) => todo!(),
+            Expr::Cast(expr, dtype) => {
+                // FIXME: integer casts cannot be done this way
+                let val = self.gen_expr(frame_size, code, *expr);
+                val.with_type_offset(dtype, 0)
+            },
         }
     }
 
@@ -462,10 +550,34 @@ impl Gen {
                     Type::I64|Type::Ptr {..} => {
                 let src_val = self.gen_expr(frame_size, code, init.want_expr());
                 src_val.val_to_reg(code, Reg::Rax);
-                dest_val.set_from_reg(code, Reg::Rax);
+                dest_val.set_from_reg(code, Reg::Rax, Reg::Rbx);
+            },
+            Type::Array { elem_type, elem_count } => {
+                let init_list = init.want_list();
+
+                if init_list.len() != *elem_count {
+                    panic!("Array initializer with wrong number of elements");
+                }
+
+                for (i, elem) in init_list.into_iter().enumerate() {
+                    self.gen_local_init(frame_size, code,
+                        &dest_val.with_type_offset(*elem_type.clone(),
+                            i * elem_type.get_size()), elem);
+                }
             },
             _ => todo!(),
         }
+    }
+
+    fn gen_jcc(&mut self, frame_size: &mut usize, code: &mut String,
+                jmp_op: &str, label: &str, lhs: Expr, rhs: Expr) {
+        let lhs_val = self.gen_expr(frame_size, code, lhs);
+        lhs_val.val_to_reg(code, Reg::Rax);
+        let rhs_val = self.gen_expr(frame_size, code, rhs);
+        rhs_val.val_to_reg(code, Reg::Rbx);
+        writeln!(code, "cmp {}, {}\n{} .{}",
+            Reg::Rax.to_str(lhs_val.ref_type()),
+            Reg::Rbx.to_str(lhs_val.ref_type()), jmp_op, label).unwrap();
     }
 
     pub fn do_func(&mut self, name: Rc<str>, param_tab: Vec<(Rc<str>, Type)>, stmts: Vec<Stmt>) {
@@ -519,22 +631,22 @@ impl Gen {
                     let dest_val = self.gen_expr(&mut frame_size, &mut code, dest);
                     let src_val = self.gen_expr(&mut frame_size, &mut code, src);
                     src_val.val_to_reg(&mut code, Reg::Rax);
-                    dest_val.set_from_reg(&mut code, Reg::Rax);
+                    dest_val.set_from_reg(&mut code, Reg::Rax, Reg::Rbx);
                 },
                 Stmt::Jmp(label)
                     => writeln!(code, "jmp .{}", label).unwrap(),
-                Stmt::Jeq(label, expr1, expr2) => {
-                },
-                Stmt::Jneq(label, expr1, expr2) => {
-                },
-                Stmt::Jl(label, expr1, expr2) => {
-                },
-                Stmt::Jle(label, expr1, expr2) => {
-                },
-                Stmt::Jg(label, expr1, expr2) => {
-                },
-                Stmt::Jge(label, expr1, expr2) => {
-                },
+                Stmt::Jeq(label, lhs, rhs)
+                    => self.gen_jcc(&mut frame_size, &mut code, "je", &*label, lhs, rhs),
+                Stmt::Jneq(label, lhs, rhs)
+                    => self.gen_jcc(&mut frame_size, &mut code, "jne", &*label, lhs, rhs),
+                Stmt::Jl(label, lhs, rhs)
+                    => self.gen_jcc(&mut frame_size, &mut code, "jl", &*label, lhs, rhs),
+                Stmt::Jle(label, lhs, rhs)
+                    => self.gen_jcc(&mut frame_size, &mut code, "jle", &*label, lhs, rhs),
+                Stmt::Jg(label, lhs, rhs)
+                    => self.gen_jcc(&mut frame_size, &mut code, "jg", &*label, lhs, rhs),
+                Stmt::Jge(label, lhs, rhs)
+                    => self.gen_jcc(&mut frame_size, &mut code, "jge", &*label, lhs, rhs),
             }
         }
 

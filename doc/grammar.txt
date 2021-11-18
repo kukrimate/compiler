@@ -42,6 +42,10 @@
                      | <identifier>
                      | * <type-declaration>
                      | [ <type-declaration> ; <expression> ]
+                     | fn ( <type-list> ) [-> <type-declaration>]
+
+<type-list> ::= <type-declaration>
+              | <type-list> , <type-declaration>
 
 <statement> ::= <label> :
               | <conditional-jump> <label> , <expression> , <expression> ;

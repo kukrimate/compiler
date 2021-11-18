@@ -45,7 +45,7 @@ fn main() {
         .get_matches();
 
     let data = std::fs::read_to_string(args.value_of("INPUT").unwrap()).unwrap();
-    let mut output_path = args.value_of("output").unwrap();
+    let output_path = args.value_of("output").unwrap();
 
     let mut gen = gen::Gen::new();
     ast::parse_file(&data, &mut gen);

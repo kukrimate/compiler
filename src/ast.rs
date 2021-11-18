@@ -344,7 +344,7 @@ macro_rules! want {
     ($self:expr, $pattern:pat, $err:expr) => {
         match $self.tmp {
             Some($pattern) => $self.tmp = $self.lex.next(),
-            _ => panic!($err),
+            _ => panic!("{}, got {:?}", $err, $self.tmp),
         }
     }
 }
@@ -592,6 +592,37 @@ impl<'source> Parser<'source> {
                     return record.clone();
                 } else {
                     panic!("Non-existent type {}", ident)
+                }
+            },
+            Token::Fn => {
+                // Read parameter types
+                want!(self, Token::LParen, "Expected (");
+                let mut params = Vec::new();
+                let mut varargs = false;
+                while !maybe_want!(self, Token::RParen) {
+                    if maybe_want!(self, Token::Varargs) {
+                        varargs = true;
+                        want!(self, Token::LParen, "Expected )");
+                        break;
+                    }
+                    params.push(self.want_type());
+                    if !maybe_want!(self, Token::Comma) {
+                        want!(self, Token::RParen, "Expected )");
+                        break;
+                    }
+                }
+
+                // Read return type
+                let rettype = if maybe_want!(self, Token::Arrow) {
+                    self.want_type()
+                } else {
+                    Type::Void
+                };
+
+                Type::Func {
+                    params: params.into(),
+                    varargs: varargs,
+                    rettype: Box::new(rettype)
                 }
             },
             _ => panic!("Invalid typename!"),
