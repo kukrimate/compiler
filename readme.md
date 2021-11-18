@@ -15,7 +15,7 @@ Current features:
 - Assembly generation for x86\_64 (SysV ABI)
 
 Notably missing features:
-- Any "real" optimizations (we do constant folding, and temporaries use a register allocator)
+- Any "real" optimizations (we do constant folding)
 - Pointer arithmetic (can be circumvented using casts)
 - Struct return types and arguments (struct pointers work fine)
 - Floating point math
