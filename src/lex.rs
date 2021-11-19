@@ -10,6 +10,15 @@ use std::rc::Rc;
 
 static mut SYMTAB: Option<HashSet<Rc<str>>> = None;
 
+fn symtab_put(s: &str) -> Rc<str> {
+    unsafe {
+        if let None = SYMTAB {
+            SYMTAB = Some(HashSet::new());
+        }
+        SYMTAB.as_mut().unwrap().get_or_insert(s.into()).clone()
+    }
+}
+
 // Exposed lexer type
 pub type Lexer<'source> = logos::Lexer<'source, Token>;
 
@@ -63,15 +72,6 @@ fn ch(lex: &mut Lexer) -> usize {
         result = result << 8 | *ch as usize;
     }
     result
-}
-
-fn symtab_put(s: &str) -> Rc<str> {
-    unsafe {
-        if let None = SYMTAB {
-            SYMTAB = Some(HashSet::new());
-        }
-        SYMTAB.as_mut().unwrap().get_or_insert(s.into()).clone()
-    }
 }
 
 fn str(lex: &mut Lexer) -> Rc<str> {

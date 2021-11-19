@@ -551,29 +551,41 @@ impl Gen {
         }
     }
 
-    fn gen_local_init(&mut self, dest_type: Type, dest_val: Val, init: Init) {
+    fn gen_init_expr(&mut self, dest_type: Type, expr: Expr) -> (Type, Val) {
+        let (src_type, src_val) = self.gen_expr(expr);
+        let comp_type = Type::do_deduce(dest_type, src_type);
+        (comp_type, src_val)
+    }
+
+    fn gen_init_list(&mut self, dest_type: Type, dest_val: Val, init: Init) {
         match dest_type {
-            Type::U8|Type::I8|Type::U16|Type::I16|
-                    Type::U32|Type::I32|Type::U64|Type::I64|Type::Ptr {..} => {
-                let (src_type, src_val) = self.gen_expr(init.want_expr());
-                let comp_type = Type::do_deduce(dest_type, src_type);
-                src_val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
+            Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::U32 | Type::I32
+                    | Type::U64 | Type::I64 | Type::Ptr {..} => {
+                let (comp_type, init_val) = self.gen_init_expr(dest_type, init.want_expr());
+                init_val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
                 dest_val.set_from_reg(&mut self.code, &comp_type, Reg::Rax, Reg::Rbx);
             },
             Type::Array { elem_type, elem_count } => {
                 let init_list = init.want_list();
-
                 if init_list.len() != elem_count {
                     panic!("Array initializer with wrong number of elements");
                 }
-
-                for (i, elem) in init_list.into_iter().enumerate() {
-                    self.gen_local_init(*elem_type.clone(),
-                        dest_val.with_offset(i * elem_type.get_size()),
-                        elem);
+                for (i, elem_init) in init_list.into_iter().enumerate() {
+                    let elem_val = dest_val.with_offset(i * elem_type.get_size());
+                    self.gen_init_list(*elem_type.clone(), elem_val, elem_init);
                 }
             },
-            _ => todo!(),
+            Type::Record { fields, .. } => {
+                let init_list = init.want_list();
+                if init_list.len() != fields.len() {
+                    panic!("Record initializer with wrong number of elements");
+                }
+                for ((field_type, field_offset), field_init) in fields.into_iter().zip(init_list) {
+                    let field_val = dest_val.with_offset(*field_offset);
+                    self.gen_init_list(field_type.clone(), field_val, field_init);
+                }
+            },
+            Type::Deduce | Type::Void | Type::Func {..} => unreachable!(),
         }
     }
 
@@ -621,14 +633,28 @@ impl Gen {
                     writeln!(&mut self.code, "jmp .$done").unwrap();
                 },
                 Stmt::Auto(name, dtype, opt_init) => {
-                    // Allocate local variable
-                    let offset = self.stack_alloc(&dtype);
-                    // Generate initializer if provided
                     if let Some(init) = opt_init {
-                        self.gen_local_init(dtype.clone(), Val::Off(offset), init);
+                        if let Type::Deduce = dtype {
+                            // Special case needed as we can't deduce type until the initializer is processed
+                            let (init_type, init_val) = self.gen_init_expr(dtype, init.want_expr());
+                            init_val.val_to_reg(&mut self.code, &init_type, Reg::Rax);
+                            let offset = self.stack_alloc(&init_type);
+                            Val::Off(offset).set_from_reg(&mut self.code, &init_type, Reg::Rax, Reg::Rbx);
+                            self.symtab.insert(name, Sym::make_local(init_type, offset));
+                        } else {
+                            // Herre we can just allocate straight away
+                            let offset = self.stack_alloc(&dtype);
+                            self.gen_init_list(dtype.clone(), Val::Off(offset), init);
+                            self.symtab.insert(name, Sym::make_local(dtype, offset));
+                        }
+                    } else {
+                        // Otherwise just allocate space
+                        if let Type::Deduce = dtype {
+                            panic!("Asked for type deduction, but no initializer was provided")
+                        }
+                        let offset = self.stack_alloc(&dtype);
+                        self.symtab.insert(name, Sym::make_local(dtype, offset));
                     }
-                    // Create symbol for it
-                    self.symtab.insert(name, Sym::make_local(dtype, offset));
                 },
                 Stmt::Label(label)
                     => writeln!(&mut self.code, ".{}:", label).unwrap(),

@@ -8,9 +8,9 @@ fn export main(argc: i32, argv: *[*u8; 2]) -> i32 {
     jl @err, argc, 2;
     auto cnt: i32 = atoi((*argv)[1]);
 
-    auto i: u64 = 1;
-    auto j: u64 = 1;
-    auto t: u64;
+    auto i = 1i32;
+    auto j = 1i32;
+    auto t: i32;
 
 @loop:
     // Print the required number of fibonacci numbers

@@ -8,20 +8,20 @@
 
 <record-declaration> ::= <record-or-union> <identifier> { [<declaration-list>] } ;
 
-<function-declaration> ::= fn [extern | export] <identifier> ( [<arguments>] ) [-> <type-declaration>] <function-body-or-semicolon>
+<record-or-union> ::= record
+                    | union
 
-<arguments> ::= <declaration-list>
-              | <declaration-list> , ...
-              | ...
+<function-declaration> ::= fn [extern | export] <identifier> ( [<parameters>] ) [-> <type-declaration>] <function-body-or-semicolon>
+
+<parameters> ::= <declaration-list>
+               | <declaration-list> , ...
+               | ...
 
 <function-body-or-semicolon> ::= ;
                                | { {<statement>}* }
 
-<record-or-union> ::= record
-                    | union
-
 <declaration-list> ::= <declaration>
-                      | <declaration-list> , <declaration>
+                     | <declaration-list> , <declaration>
 
 <declaration> ::= <identifier> : <type-declaration>
 
@@ -50,7 +50,7 @@
 <statement> ::= <label> :
               | <conditional-jump> <label> , <expression> , <expression> ;
               | jmp <label> ;
-              | auto <declaration> [= <initializer>] ;
+              | auto <identifier> [: <type-declaration>] [= <initializer>] ;
               | eval <expression> ;
               | set <expression> , <expression> ;
               | ret [<expression>] ;
