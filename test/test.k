@@ -9,16 +9,14 @@ fn export main() {
     // Initialize record
     auto foo: Foo = { 1, 2 };
     // Print fields
-    eval printf("%d\n", foo.a);
-    eval printf("%d\n", foo.b);
+    eval printf("foo.a = %d\n", foo.a);
+    eval printf("foo.b = %d\n", foo.b);
 
     // Initialize array, then print its contents
     auto arr: [i32; 5] = { 0, 1, 2, 3, 4 };
     auto i = 0i32;
-loop:
-    eval printf("%d\n", arr[i]);
-    set i = i + 1;
-    jl loop, i, 5;
-
-    eval foo.a && foo.b;
+    while i < 5 {
+        eval printf("arr[%d] = %d\n", i, arr[i]);
+        set i = i + 1;
+    }
 }

@@ -648,7 +648,7 @@ impl Gen {
                 writeln!(self.code, "test {}, {}",
                     Reg::Rax.to_str(&ty),
                     Reg::Rax.to_str(&ty)).unwrap();
-                writeln!(self.code, "jz .{}\njmp .{}", ltrue, lfalse)
+                writeln!(self.code, "jnz .{}\njmp .{}", ltrue, lfalse)
                     .unwrap();
             },
         }
@@ -703,26 +703,14 @@ impl Gen {
             jmp_op, label).unwrap();
     }
 
-    pub fn do_func(&mut self, name: Rc<str>, rettype: Type, param_tab: Vec<(Rc<str>, Type)>, stmts: Vec<Stmt>) {
-        self.frame_size = 0;
-        self.label_no = 0;
-        self.code.clear();
-
-        // Generate heading
-        writeln!(self.text, "{}:", name).unwrap();
-
-        // Create function scope with parameters
-        self.symtab.push_scope();
-        for (i, (name, dtype)) in param_tab.into_iter().enumerate() {
-            let offset = self.stack_alloc(&dtype);
-            Val::Off(offset)
-                .set_from_reg(&mut self.code, &dtype, PARAMS[i], Reg::Rbx);
-            self.symtab.insert(name, Sym::make_local(dtype, offset));
-        }
-
-        // Generate statements
+    fn gen_stmts(&mut self, rettype: &Type, stmts: Vec<Stmt>) {
         for stmt in stmts.into_iter() {
             match stmt {
+                Stmt::Block(stmts) => {
+                    self.symtab.push_scope();
+                    self.gen_stmts(rettype, stmts);
+                    self.symtab.pop_scope();
+                },
                 Stmt::Eval(expr) => {
                     self.gen_expr(expr);
                 },
@@ -771,28 +759,65 @@ impl Gen {
                 },
                 Stmt::Jmp(label)
                     => writeln!(&mut self.code, "jmp .{}", label).unwrap(),
-                Stmt::Jeq(label, lhs, rhs)
-                    => self.gen_jcc("je", &*label, lhs, rhs),
-                Stmt::Jneq(label, lhs, rhs)
-                    => self.gen_jcc("jne", &*label, lhs, rhs),
-                Stmt::Jl(label, lhs, rhs)
-                    => self.gen_jcc("jl", &*label, lhs, rhs),
-                Stmt::Jle(label, lhs, rhs)
-                    => self.gen_jcc("jle", &*label, lhs, rhs),
-                Stmt::Jg(label, lhs, rhs)
-                    => self.gen_jcc("jg", &*label, lhs, rhs),
-                Stmt::Jge(label, lhs, rhs)
-                    => self.gen_jcc("jge", &*label, lhs, rhs),
+                Stmt::If(cond, then, opt_else) => {
+                    let lthen = self.next_label();
+                    let lelse = self.next_label();
+
+                    self.gen_bool_expr(cond, lthen, lelse);
+
+                    writeln!(self.code, ".{}:", lthen).unwrap();
+                    self.symtab.push_scope();
+                    self.gen_stmts(rettype, then);
+                    self.symtab.pop_scope();
+
+                    writeln!(self.code, ".{}:", lelse).unwrap();
+                    if let Some(_else) = opt_else {
+                        self.symtab.push_scope();
+                        self.gen_stmts(rettype, _else);
+                        self.symtab.pop_scope();
+                    }
+                },
+                Stmt::While(cond, body) => {
+                    let ltest = self.next_label();
+                    let lbody = self.next_label();
+                    let lend = self.next_label();
+                    writeln!(self.code, ".{}:", ltest).unwrap();
+                    self.gen_bool_expr(cond, lbody, lend);
+                    self.symtab.push_scope();
+                    writeln!(self.code, ".{}:", lbody).unwrap();
+                    self.gen_stmts(rettype, body);
+                    self.symtab.pop_scope();
+                    writeln!(self.code, "jmp .{}\n.{}:", ltest, lend).unwrap();
+                },
             }
         }
+    }
+
+    pub fn do_func(&mut self, name: Rc<str>, rettype: Type, param_tab: Vec<(Rc<str>, Type)>, stmts: Vec<Stmt>) {
+        self.frame_size = 0;
+        self.label_no = 0;
+        self.code.clear();
+
+        // Generate heading
+        writeln!(self.text, "{}:", name).unwrap();
+
+        // Create function scope with parameters
+        self.symtab.push_scope();
+        for (i, (name, dtype)) in param_tab.into_iter().enumerate() {
+            let offset = self.stack_alloc(&dtype);
+            Val::Off(offset)
+                .set_from_reg(&mut self.code, &dtype, PARAMS[i], Reg::Rbx);
+            self.symtab.insert(name, Sym::make_local(dtype, offset));
+        }
+
+        // Generate statements
+        self.gen_stmts(&rettype, stmts);
 
         // Round stack frame
         self.frame_size = (self.frame_size + 15) / 16 * 16;
-
         // Generate code
         writeln!(self.text, "push rbp\nmov rbp, rsp\nsub rsp, {}\n{}.$done:\nleave\nret",
             self.frame_size, self.code).unwrap();
-
         // Drop function scope
         self.symtab.pop_scope();
     }

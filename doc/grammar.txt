@@ -8,14 +8,14 @@
 
 <record-declaration> ::= record <identifier> { [<declaration-list>] } ;
 
-<function-declaration> ::= fn [extern | export] <identifier> ( [<parameters>] ) [-> <type-declaration>] <function-body-or-semicolon>
+<function-declaration> ::= fn [extern | export] <identifier> ( [<parameters>] ) [-> <type-declaration>] <block-or-semicolon>
 
 <parameters> ::= <declaration-list>
                | <declaration-list> , ...
                | ...
 
-<function-body-or-semicolon> ::= ;
-                               | { {<statement>}* }
+<block-or-semicolon> ::= <block>
+                       | ;
 
 <declaration-list> ::= <declaration>
                      | <declaration-list> , <declaration>
@@ -45,20 +45,17 @@
 <type-list> ::= <type-declaration>
               | <type-list> , <type-declaration>
 
-<statement> ::= <identifier> :
-              | <conditional-jump> <label> , <expression> , <expression> ;
+<statement> ::= <block>
+              | <identifier> :
               | jmp <identifier> ;
+              | if <expression> <block>
+              | while <expression> <block>
               | auto <identifier> [: <type-declaration>] [= <initializer>] ;
               | eval <expression> ;
-              | set <expression> , <expression> ;
+              | set <expression> = <expression> ;
               | ret [<expression>] ;
 
-<conditional-jump> ::= jeq
-                     | jneq
-                     | jl
-                     | jle
-                     | jg
-                     | jge
+<block> ::= { {<statement>}* }
 
 <expression> ::= <lor-expression>
 

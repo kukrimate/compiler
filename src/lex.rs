@@ -218,18 +218,12 @@ pub enum Token {
     Set,
     #[token("jmp")]
     Jmp,
-    #[token("jeq")]
-    Jeq,
-    #[token("jneq")]
-    Jneq,
-    #[token("jl")]
-    Jl,
-    #[token("jle")]
-    Jle,
-    #[token("jg")]
-    Jg,
-    #[token("jge")]
-    Jge,
+    #[token("if")]
+    If,
+    #[token("else")]
+    Else,
+    #[token("while")]
+    While,
 
     #[error]
     #[regex(r"[ \t\n\f\v]+", logos::skip)]

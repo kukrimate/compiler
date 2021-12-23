@@ -434,18 +434,15 @@ impl Init {
 
 #[derive(Debug)]
 pub enum Stmt {
+    Block(Vec<Stmt>),
     Eval(Expr),
     Ret(Option<Expr>),
     Auto(Rc<str>, Type, Option<Init>),
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
-    Jeq(Rc<str>, Expr, Expr),
-    Jneq(Rc<str>, Expr, Expr),
-    Jl(Rc<str>, Expr, Expr),
-    Jle(Rc<str>, Expr, Expr),
-    Jg(Rc<str>, Expr, Expr),
-    Jge(Rc<str>, Expr, Expr),
+    If(Expr, Vec<Stmt>, Option<Vec<Stmt>>),
+    While(Expr, Vec<Stmt>),
 }
 
 #[derive(Debug,PartialEq)]
@@ -672,11 +669,11 @@ impl<'source> Parser<'source> {
     }
 
     fn want_eq(&mut self) -> Expr {
-        let expr = self.want_shift();
+        let expr = self.want_rel();
         if maybe_want!(self, Token::Eq) {
-            expr.make_eq(self.want_rel())
+            expr.make_eq(self.want_eq())
         } else if maybe_want!(self, Token::Ne) {
-            expr.make_ne(self.want_rel())
+            expr.make_ne(self.want_eq())
         } else {
             expr
         }
@@ -862,16 +859,31 @@ impl<'source> Parser<'source> {
         }
     }
 
+    fn want_block(&mut self) -> Vec<Stmt> {
+        let mut stmts = Vec::new();
+        while !maybe_want!(self, Token::RCurly) {
+            stmts.push(self.want_stmt());
+        }
+        stmts
+    }
+
     fn want_stmt(&mut self) -> Stmt {
-        let stmt = match self.next_token() {
-            Token::Eval => Stmt::Eval(self.want_expr()),
+        match self.next_token() {
+            Token::LCurly => Stmt::Block(self.want_block()),
+            Token::Eval => {
+                let stmt = Stmt::Eval(self.want_expr());
+                want!(self, Token::Semicolon, "Expected ;");
+                stmt
+            },
             Token::Ret => {
-                if maybe_want!(self, Token::Semicolon) {
+                let stmt = if maybe_want!(self, Token::Semicolon) {
                     // NOTE: return since we already have the semicolon
                     return Stmt::Ret(None)
                 } else {
                     Stmt::Ret(Some(self.want_expr()))
-                }
+                };
+                want!(self, Token::Semicolon, "Expected ;");
+                stmt
             },
             Token::Auto => {
                 let ident = self.want_ident();
@@ -884,67 +896,46 @@ impl<'source> Parser<'source> {
                 if maybe_want!(self, Token::Assign) {
                     init = Some(self.want_initializer());
                 }
-                Stmt::Auto(ident, dtype, init)
+                let stmt = Stmt::Auto(ident, dtype, init);
+                want!(self, Token::Semicolon, "Expected ;");
+                stmt
             },
             Token::Ident(s) => {
+                want!(self, Token::Colon, "Expected :");
                 Stmt::Label(s)
             },
-            Token::Set      => {
+            Token::Set => {
                 let var = self.want_expr();
                 want!(self, Token::Assign, "Expected =");
-                Stmt::Set(var, self.want_expr())
+                let stmt = Stmt::Set(var, self.want_expr());
+                want!(self, Token::Semicolon, "Expected ;");
+                stmt
             },
-            Token::Jmp      => Stmt::Jmp(self.want_ident()),
-            Token::Jeq      => {
-                let label = self.want_ident();
-                want!(self, Token::Comma, "Expected ,");
-                let expr1 = self.want_expr();
-                want!(self, Token::Comma, "Expected ,");
-                Stmt::Jeq(label, expr1, self.want_expr())
+            Token::Jmp => {
+                let stmt = Stmt::Jmp(self.want_ident());
+                want!(self, Token::Semicolon, "Expected ;");
+                stmt
             },
-            Token::Jneq     => {
-                let label = self.want_ident();
-                want!(self, Token::Comma, "Expected ,");
-                let expr1 = self.want_expr();
-                want!(self, Token::Comma, "Expected ,");
-                Stmt::Jneq(label, expr1, self.want_expr())
+            Token::If => {
+                let cond = self.want_expr();
+                want!(self, Token::LCurly, "Expected left curly");
+                let then = self.want_block();
+                let _else = if maybe_want!(self, Token::Else) {
+                    want!(self, Token::LCurly, "Expected left curly");
+                    Some(self.want_block())
+                } else {
+                    None
+                };
+                Stmt::If(cond, then, _else)
             },
-            Token::Jl       => {
-                let label = self.want_ident();
-                want!(self, Token::Comma, "Expected ,");
-                let expr1 = self.want_expr();
-                want!(self, Token::Comma, "Expected ,");
-                Stmt::Jl(label, expr1, self.want_expr())
-            },
-            Token::Jle      => {
-                let label = self.want_ident();
-                want!(self, Token::Comma, "Expected ,");
-                let expr1 = self.want_expr();
-                want!(self, Token::Comma, "Expected ,");
-                Stmt::Jle(label, expr1, self.want_expr())
-            },
-            Token::Jg       => {
-                let label = self.want_ident();
-                want!(self, Token::Comma, "Expected ,");
-                let expr1 = self.want_expr();
-                want!(self, Token::Comma, "Expected ,");
-                Stmt::Jg(label, expr1, self.want_expr())
-            },
-            Token::Jge      => {
-                let label = self.want_ident();
-                want!(self, Token::Comma, "Expected ,");
-                let expr1 = self.want_expr();
-                want!(self, Token::Comma, "Expected ,");
-                Stmt::Jge(label, expr1, self.want_expr())
+            Token::While => {
+                let cond = self.want_expr();
+                want!(self, Token::LCurly, "Expected left curly");
+                let body = self.want_block();
+                Stmt::While(cond, body)
             },
             tok => panic!("Invalid statement: {:?}", tok),
-        };
-        if let Stmt::Label(_) = stmt {
-            want!(self, Token::Colon, "Expected :");
-        } else {
-            want!(self, Token::Semicolon, "Expected ;");
         }
-        stmt
     }
 
     fn process(&mut self) {
@@ -1013,12 +1004,9 @@ impl<'source> Parser<'source> {
                     });
 
                     // Read body (if present)
-                    let mut stmts = Vec::new();
                     if !maybe_want!(self, Token::Semicolon) {
                         want!(self, Token::LCurly, "Expected left curly");
-                        while !maybe_want!(self, Token::RCurly) {
-                            stmts.push(self.want_stmt());
-                        }
+                        let stmts = self.want_block();
                         // Generate body
                         self.gen.do_func(name, rettype, param_tab, stmts);
                     }
