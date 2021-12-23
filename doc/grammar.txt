@@ -62,26 +62,26 @@
 <expression> ::= <or-expression>
 
 <or-expression> ::= <xor-expression>
-                  | <or-expression> | <or-expression>
+                  | <or-expression> | <xor-expression>
 
 <xor-expression> ::= <and-expression>
-                   | <xor-expression> ^ <xor-expression>
+                   | <xor-expression> ^ <and-expression>
 
 <and-expression> ::= <shift-expression>
-                   | <and-expression> & <and-expression>
+                   | <and-expression> & <shift-expression>
 
 <shift-expression> ::= <additive-expression>
-                     | <shift-expression> << <shift-expression>
-                     | <shift-expression> >> <shift-expression>
+                     | <shift-expression> << <additive-expression>
+                     | <shift-expression> >> <additive-expression>
 
 <additive-expression> ::= <multiplicative-expression>
-                        | <additive-expression> + <additive-expression>
-                        | <additive-expression> - <additive-expression>
+                        | <additive-expression> + <multiplicative-expression>
+                        | <additive-expression> - <multiplicative-expression>
 
 <multiplicative-expression> ::= <cast-expression>
-                              | <multiplicative-expression> * <multiplicative-expression>
-                              | <multiplicative-expression> / <multiplicative-expression>
-                              | <multiplicative-expression> % <multiplicative-expression>
+                              | <multiplicative-expression> * <cast-expression>
+                              | <multiplicative-expression> / <cast-expression>
+                              | <multiplicative-expression> % <cast-expression>
 
 <cast-expression> ::= <unary-expression>
                     | <cast-expression> as <type-declaration>
