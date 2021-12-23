@@ -6,10 +6,7 @@
 
 <static-declaration> ::= static [extern | export] <declaration> [= <initializer>] ;
 
-<record-declaration> ::= <record-or-union> <identifier> { [<declaration-list>] } ;
-
-<record-or-union> ::= record
-                    | union
+<record-declaration> ::= record <identifier> { [<declaration-list>] } ;
 
 <function-declaration> ::= fn [extern | export] <identifier> ( [<parameters>] ) [-> <type-declaration>] <function-body-or-semicolon>
 

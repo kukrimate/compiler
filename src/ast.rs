@@ -44,8 +44,6 @@ pub enum Type {
         elem_count: usize,
     },
     Record {
-        // Was this declared as a union?
-        is_union: bool,
         // Name lookup table
         lookup: HashMap<Rc<str>, usize>,
         // Field types and offsets (in declaration order)
@@ -651,7 +649,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_record(&mut self, is_union: bool) -> Type {
+    fn want_record(&mut self) -> Type {
         let mut lookup = HashMap::new();
         let mut fields = Vec::new();
         let mut max_align = 0;
@@ -688,7 +686,6 @@ impl<'source> Parser<'source> {
         want!(self, Token::Semicolon, "Expected ;");
 
         Type::Record {
-            is_union: is_union,
             lookup: lookup,
             fields: fields.into_boxed_slice(),
             align: max_align,
@@ -787,7 +784,7 @@ impl<'source> Parser<'source> {
                 want!(self, Token::Comma, "Expected ,");
                 Stmt::Jge(label, expr1, self.want_expr())
             },
-            tok @ _ => panic!("Invalid statement: {:?}", tok),
+            tok => panic!("Invalid statement: {:?}", tok),
         };
         if let Stmt::Label(_) = stmt {
             want!(self, Token::Colon, "Expected :");
@@ -802,13 +799,8 @@ impl<'source> Parser<'source> {
             match self.next_token() {
                 Token::Record => {
                     let name = self.want_ident();
-                    let record = self.want_record(false);
+                    let record = self.want_record();
                     self.records.insert(name, record);
-                },
-                Token::Union => {
-                    let name = self.want_ident();
-                    let union = self.want_record(true);
-                    self.records.insert(name, union);
                 },
                 Token::Static => {
                     let vis = self.maybe_want_vis();

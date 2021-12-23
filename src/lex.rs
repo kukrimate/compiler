@@ -103,8 +103,6 @@ pub enum Token {
     // Declarations
     #[token("record")]
     Record,
-    #[token("union")]
-    Union,
     #[token("fn")]
     Fn,
     #[token("auto")]
