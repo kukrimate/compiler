@@ -19,4 +19,6 @@ loop:
     eval printf("%d\n", arr[i]);
     set i = i + 1;
     jl loop, i, 5;
+
+    eval foo.a && foo.b;
 }

@@ -1,0 +1,92 @@
+section .text
+main:
+push rbp
+mov rbp, rsp
+sub rsp, 96
+mov eax, 1
+mov [rsp + 0], eax
+mov eax, 2
+mov [rsp + 4], eax
+lea rax, [str$0 + 0]
+mov [rsp + 8], rax
+mov rdi, [rsp + 8]
+mov esi, [rsp + 0]
+lea rbx, [printf + 0]
+xor eax, eax
+call rbx
+mov [rsp + 16], eax
+lea rax, [str$1 + 0]
+mov [rsp + 20], rax
+mov rdi, [rsp + 20]
+mov esi, [rsp + 4]
+lea rbx, [printf + 0]
+xor eax, eax
+call rbx
+mov [rsp + 28], eax
+mov eax, 0
+mov [rsp + 32], eax
+mov eax, 1
+mov [rsp + 36], eax
+mov eax, 2
+mov [rsp + 40], eax
+mov eax, 3
+mov [rsp + 44], eax
+mov eax, 4
+mov [rsp + 48], eax
+mov eax, 0
+mov [rsp + 52], eax
+.loop:
+lea rax, [str$2 + 0]
+mov [rsp + 56], rax
+mov rdi, [rsp + 56]
+lea rax, [rsp + 32]
+mov ebx, [rsp + 52]
+imul rbx, 4
+add rax, rbx
+mov [rsp + 64], rax
+mov rsi, [rsp + 64]
+mov esi, [rsi + 0]
+lea rbx, [printf + 0]
+xor eax, eax
+call rbx
+mov [rsp + 72], eax
+mov eax, [rsp + 52]
+mov ebx, 1
+add eax, ebx
+mov [rsp + 76], eax
+mov eax, [rsp + 76]
+mov [rsp + 52], eax
+mov eax, [rsp + 52]
+mov ebx, 5
+cmp eax, ebx
+jl .loop
+mov eax, [rsp + 0]
+test eax, eax
+jz .3
+jmp .1
+.3
+mov eax, [rsp + 4]
+test eax, eax
+jz .0
+jmp .1
+.0:
+mov [rsp + 80], 1
+jmp .2
+.1:
+mov [rsp + 80], 0
+.2:
+.$done:
+leave
+ret
+
+section .rodata
+str$0 db 0x25, 0x64, 0x0a, 0
+str$1 db 0x25, 0x64, 0x0a, 0
+str$2 db 0x25, 0x64, 0x0a, 0
+
+section .data
+
+section .bss
+
+extern printf
+global main

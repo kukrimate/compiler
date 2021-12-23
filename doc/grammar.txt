@@ -28,7 +28,8 @@
 <initializer-list> ::= <initializer>
                      | <initializer-list> , <initializer>
 
-<type-declaration> ::= u8
+<type-declaration> ::= bool
+                     | u8
                      | i8
                      | u16
                      | i16
@@ -59,7 +60,13 @@
                      | jg
                      | jge
 
-<expression> ::= <or-expression>
+<expression> ::= <lor-expression>
+
+<lor-expression> ::= <land-expression>
+                   | <lor-expression> || <land-expression>
+
+<land-expression> ::= <or-expression>
+                    | <land-expression> && <or-expression>
 
 <or-expression> ::= <xor-expression>
                   | <or-expression> | <xor-expression>
@@ -67,8 +74,18 @@
 <xor-expression> ::= <and-expression>
                    | <xor-expression> ^ <and-expression>
 
-<and-expression> ::= <shift-expression>
-                   | <and-expression> & <shift-expression>
+<and-expression> ::= <eq-expression>
+                   | <and-expression> & <rel-expression>
+
+<eq-expression> ::= <rel-expression>
+                  | <eq-expression> == <rel-expression>
+                  | <eq-expression> != <rel-expression>
+
+<rel-expression> ::= <shift-expression>
+                   | <rel-expression> <  <shift-expression>
+                   | <rel-expression> <= <shift-expression>
+                   | <rel-expression> >  <shift-expression>
+                   | <rel-expression> >= <shift-expression>
 
 <shift-expression> ::= <additive-expression>
                      | <shift-expression> << <additive-expression>
@@ -90,6 +107,7 @@
                      | + <unary-expression>
                      | - <unary-expression>
                      | ~ <unary-expression>
+                     | ! <unary-expression>
                      | & <unary-expression>
                      | * <unary-expression>
 
@@ -102,6 +120,7 @@
                        | <string-literal> [<type-suffix>]
                        | <integer-constant> [<type-suffix>]
                        | <char-constant> [<type-suffix>]
+                       | <bool-constant>
                        | <identifier>
 
 <type-suffix> ::= u8
@@ -112,6 +131,9 @@
                 | i32
                 | u64
                 | i64
+
+<bool-constant> ::= true
+                  | false
 
 <expression-list> ::= <expression>
                     | <expression-list> , <expression>

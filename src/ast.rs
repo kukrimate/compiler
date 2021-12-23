@@ -25,6 +25,7 @@ macro_rules! round_up {
 pub enum Type {
     Void,   // Non-existent value
     Deduce, // Deduce type from context
+    Bool,
     U8,
     I8,
     U16,
@@ -62,8 +63,7 @@ pub enum Type {
 impl Type {
     pub fn get_align(&self) -> usize {
         match self {
-            Type::U8  => 1,
-            Type::I8  => 1,
+            Type::Bool | Type::U8 | Type::I8 => 1,
             Type::U16 => 2,
             Type::I16 => 2,
             Type::U32 => 4,
@@ -80,8 +80,7 @@ impl Type {
 
     pub fn get_size(&self) -> usize {
         match self {
-            Type::U8  => 1,
-            Type::I8  => 1,
+            Type::Bool | Type::U8 | Type::I8 => 1,
             Type::U16 => 2,
             Type::I16 => 2,
             Type::U32 => 4,
@@ -127,23 +126,32 @@ pub enum Expr {
     Ref(Box<Expr>),
     Deref(Box<Expr>),
     // Unary operations
-    Inv(Box<Expr>),
+    Not(Box<Expr>),
+    LNot(Box<Expr>),
     Neg(Box<Expr>),
     // Postfix expressions
     Field(Box<Expr>, Rc<str>),
     Elem(Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     // Binary operations
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
     Rem(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
-    And(Box<Expr>, Box<Expr>),
-    Xor(Box<Expr>, Box<Expr>),
+    Add(Box<Expr>, Box<Expr>),
     Lsh(Box<Expr>, Box<Expr>),
     Rsh(Box<Expr>, Box<Expr>),
+    Lt(Box<Expr>, Box<Expr>),
+    Le(Box<Expr>, Box<Expr>),
+    Gt(Box<Expr>, Box<Expr>),
+    Ge(Box<Expr>, Box<Expr>),
+    Eq(Box<Expr>, Box<Expr>),
+    Ne(Box<Expr>, Box<Expr>),
+    Sub(Box<Expr>, Box<Expr>),
+    And(Box<Expr>, Box<Expr>),
+    Xor(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
+    LAnd(Box<Expr>, Box<Expr>),
+    LOr(Box<Expr>, Box<Expr>),
     // Cast
     Cast(Box<Expr>, Type)
 }
@@ -152,11 +160,26 @@ pub enum Expr {
 // Constructors for expression that might be able to fold
 //
 
+fn us(val: bool) -> usize {
+    if val {
+        1
+    } else {
+        0
+    }
+}
+
 impl Expr {
-    pub fn make_inv(self) -> Expr {
+    pub fn make_not(self) -> Expr {
         match self {
             Expr::Const(dtype, val) => Expr::Const(dtype, !val),
-            expr => Expr::Inv(Box::from(expr)),
+            expr => Expr::Not(Box::from(expr)),
+        }
+    }
+
+    pub fn make_lnot(self) -> Expr {
+        match self {
+            Expr::Const(_, val) => Expr::Const(Type::Bool, us(val == 0)),
+            expr => Expr::LNot(Box::from(expr)),
         }
     }
 
@@ -252,6 +275,78 @@ impl Expr {
         }
     }
 
+    pub fn make_lt(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot compare constants with different types")
+                }
+                Expr::Const(dtype1, us(val1 < val2))
+            },
+            expr1 => Expr::Lt(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_le(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot compare constants with different types")
+                }
+                Expr::Const(dtype1, us(val1 <= val2))
+            },
+            expr1 => Expr::Le(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_gt(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot compare constants with different types")
+                }
+                Expr::Const(dtype1, us(val1 > val2))
+            },
+            expr1 => Expr::Gt(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_ge(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot compare constants with different types")
+                }
+                Expr::Const(dtype1, us(val1 >= val2))
+            },
+            expr1 => Expr::Ge(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_eq(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot compare constants with different types")
+                }
+                Expr::Const(dtype1, us(val1 == val2))
+            },
+            expr1 => Expr::Eq(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_ne(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
+                if dtype1 != dtype2 {
+                    panic!("Cannot compare constants with different types")
+                }
+                Expr::Const(dtype1, us(val1 != val2))
+            },
+            expr1 => Expr::Ne(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
     pub fn make_and(self, expr2: Expr) -> Expr {
         match self {
             Expr::Const(dtype1, val1) if let Expr::Const(dtype2, val2) = expr2 => {
@@ -285,6 +380,24 @@ impl Expr {
                 Expr::Const(dtype1, val1 | val2)
             },
             expr1 => Expr::Or(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_land(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(_, val1) if let Expr::Const(_, val2) = expr2 => {
+                Expr::Const(Type::Bool, us(val1 == 0 && val2 == 0))
+            },
+            expr1 => Expr::LAnd(Box::from(expr1), Box::from(expr2)),
+        }
+    }
+
+    pub fn make_lor(self, expr2: Expr) -> Expr {
+        match self {
+            Expr::Const(_, val1) if let Expr::Const(_, val2) = expr2 => {
+                Expr::Const(Type::Bool, us(val1 == 0 || val2 == 0))
+            },
+            expr1 => Expr::LOr(Box::from(expr1), Box::from(expr2)),
         }
     }
 
@@ -449,6 +562,10 @@ impl<'source> Parser<'source> {
                 => Expr::Sym(s),
             Token::Constant(val)
                 => Expr::Const(self.want_type_suffix(), val),
+            Token::True
+                => Expr::Const(Type::Bool, 1),
+            Token::False
+                => Expr::Const(Type::Bool, 0),
             _ => panic!("Invalid constant value!"),
         }
     }
@@ -481,7 +598,9 @@ impl<'source> Parser<'source> {
         if maybe_want!(self, Token::Sub) {
             self.want_unary().make_neg()
         } else if maybe_want!(self, Token::Tilde) {
-            self.want_unary().make_inv()
+            self.want_unary().make_not()
+        } else if maybe_want!(self, Token::Excl) {
+            self.want_unary().make_lnot()
         } else if maybe_want!(self, Token::Mul) {
             Expr::Deref(Box::from(self.want_unary()))
         } else if maybe_want!(self, Token::And) {
@@ -537,8 +656,34 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_and(&mut self) -> Expr {
+    fn want_rel(&mut self) -> Expr {
         let expr = self.want_shift();
+        if maybe_want!(self, Token::Lt) {
+            expr.make_lt(self.want_rel())
+        } else if maybe_want!(self, Token::Le) {
+            expr.make_le(self.want_rel())
+        } else if maybe_want!(self, Token::Gt) {
+            expr.make_gt(self.want_rel())
+        } else if maybe_want!(self, Token::Ge) {
+            expr.make_ge(self.want_rel())
+        } else {
+            expr
+        }
+    }
+
+    fn want_eq(&mut self) -> Expr {
+        let expr = self.want_shift();
+        if maybe_want!(self, Token::Eq) {
+            expr.make_eq(self.want_rel())
+        } else if maybe_want!(self, Token::Ne) {
+            expr.make_ne(self.want_rel())
+        } else {
+            expr
+        }
+    }
+
+    fn want_and(&mut self) -> Expr {
+        let expr = self.want_eq();
         if maybe_want!(self, Token::And) {
             expr.make_and(self.want_and())
         } else {
@@ -564,12 +709,31 @@ impl<'source> Parser<'source> {
         }
     }
 
+    fn want_land(&mut self) -> Expr {
+        let expr = self.want_or();
+        if maybe_want!(self, Token::LAnd) {
+            expr.make_land(self.want_land())
+        } else {
+            expr
+        }
+    }
+
+    fn want_lor(&mut self) -> Expr {
+        let expr = self.want_land();
+        if maybe_want!(self, Token::LOr) {
+            expr.make_lor(self.want_lor())
+        } else {
+            expr
+        }
+    }
+
     fn want_expr(&mut self) -> Expr {
-        self.want_or()
+        self.want_lor()
     }
 
     fn want_type(&mut self) -> Type {
         match self.next_token() {
+            Token::Bool => Type::Bool,
             Token::U8   => Type::U8,
             Token::I8   => Type::I8,
             Token::U16  => Type::U16,
@@ -717,7 +881,7 @@ impl<'source> Parser<'source> {
                     Type::Deduce
                 };
                 let mut init = None;
-                if maybe_want!(self, Token::Eq) {
+                if maybe_want!(self, Token::Assign) {
                     init = Some(self.want_initializer());
                 }
                 Stmt::Auto(ident, dtype, init)
@@ -727,7 +891,7 @@ impl<'source> Parser<'source> {
             },
             Token::Set      => {
                 let var = self.want_expr();
-                want!(self, Token::Eq, "Expected =");
+                want!(self, Token::Assign, "Expected =");
                 Stmt::Set(var, self.want_expr())
             },
             Token::Jmp      => Stmt::Jmp(self.want_ident()),
@@ -796,7 +960,7 @@ impl<'source> Parser<'source> {
                     let name = self.want_ident();
                     want!(self, Token::Colon, "Expected :");
                     let dtype = self.want_type();
-                    if maybe_want!(self, Token::Eq) {
+                    if maybe_want!(self, Token::Assign) {
                         let init = self.want_initializer();
                         self.gen.do_static_init(vis, name, dtype, init);
                     } else {

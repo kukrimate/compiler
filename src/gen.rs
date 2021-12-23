@@ -40,7 +40,7 @@ enum Reg {
 impl Reg {
     fn to_str(&self, dtype: &Type) -> &str {
         match dtype {
-            Type::U8|Type::I8
+            Type::Bool|Type::U8|Type::I8
                 => ["al", "bl", "cl", "dl", "sil", "dil", "r8b", "r9b", "r10b",
                     "r11b", "r12b", "r13b", "r14b", "r15b"][*self as usize],
             Type::U16|Type::I16
@@ -196,7 +196,7 @@ impl Val {
         let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
         match self {
             Val::Imm(val)
-                => writeln!(text, "mov {}, {}", val, reg.to_str(dtype)).unwrap(),
+                => panic!("Cannot write to constant"),
             Val::Off(offset)
                 => writeln!(text, "mov [rsp + {}], {}", offset, reg.to_str(dtype)).unwrap(),
             Val::Sym(name, offset)
@@ -205,6 +205,24 @@ impl Val {
                 ptr.val_to_reg(text, &void_ptr, tmp_reg);
                 writeln!(text, "mov [{} + {}], {}",
                     tmp_reg.to_str(&void_ptr), offset, reg.to_str(dtype)).unwrap();
+            },
+            Val::Void => panic!("Use of void value"),
+        }
+    }
+
+    fn set_from_const(&self, text: &mut String, val: usize, tmp_reg: Reg) {
+        let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
+        match self {
+            Val::Imm(val)
+                => panic!("Cannot write to constant"),
+            Val::Off(offset)
+                => writeln!(text, "mov [rsp + {}], {}", offset, val).unwrap(),
+            Val::Sym(name, offset)
+                => writeln!(text, "mov [{} + {}], {}", name, offset, val).unwrap(),
+            Val::Deref(ptr, offset) => {
+                ptr.val_to_reg(text, &void_ptr, tmp_reg);
+                writeln!(text, "mov [{} + {}], {}",
+                    tmp_reg.to_str(&void_ptr), offset, val).unwrap();
             },
             Val::Void => panic!("Use of void value"),
         }
@@ -224,6 +242,7 @@ impl Val {
 pub struct Gen {
     // Current function
     frame_size: usize,
+    label_no: usize,
     code: String,
     // Symbol table
     symtab: SymTab,
@@ -241,6 +260,7 @@ impl Gen {
         Gen {
             // Function
             frame_size: 0,
+            label_no: 0,
             code: String::new(),
             // Global
             symtab: SymTab::new(),
@@ -350,6 +370,12 @@ impl Gen {
         Val::Off(offset)
     }
 
+    fn next_label(&mut self) -> usize {
+        let label = self.label_no;
+        self.label_no += 1;
+        label
+    }
+
     fn gen_unary(&mut self, op: &str, expr: Expr) -> (Type, Val) {
         let (expr_type, expr_val) = self.gen_expr(expr);
         expr_val.val_to_reg(&mut self.code, &expr_type, Reg::Rax);
@@ -431,7 +457,7 @@ impl Gen {
             },
 
             // Unary operations
-            Expr::Inv(expr)
+            Expr::Not(expr)
                 => self.gen_unary("not", *expr),
             Expr::Neg(expr)
                 => self.gen_unary("neg", *expr),
@@ -542,11 +568,88 @@ impl Gen {
             Expr::Rsh(lhs, rhs)
                 => self.gen_shift("shr", *lhs, *rhs),
 
+            // Boolean expressions
+            Expr::LNot(_) |
+            Expr::Lt(_, _) |
+            Expr::Le(_, _) |
+            Expr::Gt(_, _) |
+            Expr::Ge(_, _) |
+            Expr::Eq(_, _) |
+            Expr::Ne(_, _) |
+            Expr::LAnd(_, _) |
+            Expr::LOr(_, _) => {
+                let ltrue = self.next_label();
+                let lfalse = self.next_label();
+                let lend = self.next_label();
+                self.gen_bool_expr(expr, ltrue, lfalse);
+                let ty = Type::Bool;
+                let val = self.alloc_temporary(&ty);
+                writeln!(self.code, ".{}:", ltrue).unwrap();
+                val.set_from_const(&mut self.code, 1, Reg::Rbx);
+                writeln!(self.code, "jmp .{}", lend).unwrap();
+                writeln!(self.code, ".{}:", lfalse).unwrap();
+                val.set_from_const(&mut self.code, 0, Reg::Rbx);
+                writeln!(self.code, ".{}:", lend).unwrap();
+                (ty, val)
+            },
+
             // Cast
             Expr::Cast(expr, dtype) => {
                 // FIXME: integer casts cannot be done this way
                 let (_, val) = self.gen_expr(*expr);
                 (dtype, val)
+            },
+        }
+    }
+
+    fn gen_bool_expr(&mut self, expr: Expr, ltrue: usize, lfalse: usize) {
+        match expr {
+            Expr::LNot(expr) => self.gen_bool_expr(*expr, lfalse, ltrue),
+            // FIXME: these are all unsigned
+            Expr::Lt(lhs, rhs) => {
+                self.gen_jcc("jb", &format!("{}", ltrue), *lhs, *rhs);
+                writeln!(self.code, "jmp .{}", lfalse).unwrap();
+            },
+            Expr::Le(lhs, rhs) => {
+                self.gen_jcc("jbe", &format!("{}", ltrue), *lhs, *rhs);
+                writeln!(self.code, "jmp .{}", lfalse).unwrap();
+            },
+            Expr::Gt(lhs, rhs) => {
+                self.gen_jcc("ja", &format!("{}", ltrue), *lhs, *rhs);
+                writeln!(self.code, "jmp .{}", lfalse).unwrap();
+            },
+            Expr::Ge(lhs, rhs) => {
+                self.gen_jcc("jae", &format!("{}", ltrue), *lhs, *rhs);
+                writeln!(self.code, "jmp .{}", lfalse).unwrap();
+            },
+            Expr::Eq(lhs, rhs) => {
+                self.gen_jcc("je", &format!("{}", ltrue), *lhs, *rhs);
+                writeln!(self.code, "jmp .{}", lfalse).unwrap();
+            },
+            Expr::Ne(lhs, rhs) => {
+                self.gen_jcc("jne", &format!("{}", ltrue), *lhs, *rhs);
+                writeln!(self.code, "jmp .{}", lfalse).unwrap();
+            },
+            Expr::LAnd(lhs, rhs) => {
+                let lmid = self.next_label();
+                self.gen_bool_expr(*lhs, lmid, lfalse);
+                writeln!(self.code, ".{}", lmid).unwrap();
+                self.gen_bool_expr(*rhs, ltrue, lfalse);
+            },
+            Expr::LOr(lhs, rhs) => {
+                let lmid = self.next_label();
+                self.gen_bool_expr(*lhs, ltrue, lmid);
+                writeln!(self.code, ".{}", lmid).unwrap();
+                self.gen_bool_expr(*rhs, ltrue, lfalse);
+            }
+            expr => {
+                let (ty, val) = self.gen_expr(expr);
+                val.val_to_reg(&mut self.code, &ty, Reg::Rax);
+                writeln!(self.code, "test {}, {}",
+                    Reg::Rax.to_str(&ty),
+                    Reg::Rax.to_str(&ty)).unwrap();
+                writeln!(self.code, "jz .{}\njmp .{}", ltrue, lfalse)
+                    .unwrap();
             },
         }
     }
@@ -559,8 +662,8 @@ impl Gen {
 
     fn gen_init_list(&mut self, dest_type: Type, dest_val: Val, init: Init) {
         match dest_type {
-            Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::U32 | Type::I32
-                    | Type::U64 | Type::I64 | Type::Ptr {..} => {
+            Type::Bool | Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::U32
+                     | Type::I32 | Type::U64 | Type::I64 | Type::Ptr {..} => {
                 let (comp_type, init_val) = self.gen_init_expr(dest_type, init.want_expr());
                 init_val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
                 dest_val.set_from_reg(&mut self.code, &comp_type, Reg::Rax, Reg::Rbx);
@@ -602,6 +705,7 @@ impl Gen {
 
     pub fn do_func(&mut self, name: Rc<str>, rettype: Type, param_tab: Vec<(Rc<str>, Type)>, stmts: Vec<Stmt>) {
         self.frame_size = 0;
+        self.label_no = 0;
         self.code.clear();
 
         // Generate heading

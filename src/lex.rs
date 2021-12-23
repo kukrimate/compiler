@@ -83,6 +83,8 @@ fn str(lex: &mut Lexer) -> Rc<str> {
 #[derive(logos::Logos, Debug)]
 pub enum Token {
     // Typenames
+    #[token("bool")]
+    Bool,
     #[token("u8")]
     U8,
     #[token("i8")]
@@ -99,6 +101,12 @@ pub enum Token {
     U64,
     #[token("i64")]
     I64,
+
+    // Boolean constants
+    #[token("true")]
+    True,
+    #[token("false")]
+    False,
 
     // Declarations
     #[token("record")]
@@ -133,29 +141,47 @@ pub enum Token {
 
     // Symbols
     #[token("=")]
-    Eq,        // =
+    Assign,    // =
     #[token("~")]
     Tilde,     // ~
-    #[token("+")]
-    Add,       // +
-    #[token("-")]
-    Sub,       // -
+    #[token("!")]
+    Excl,      // !
     #[token("*")]
     Mul,       // *
     #[token("/")]
     Div,       // /
     #[token("%")]
     Rem,       // %
-    #[token("|")]
-    Or,        // |
-    #[token("&")]
-    And,       // &
-    #[token("^")]
-    Xor,       // ^
+    #[token("+")]
+    Add,       // +
+    #[token("-")]
+    Sub,       // -
     #[token("<<")]
     Lsh,       // <<
     #[token(">>")]
     Rsh,       // >>
+    #[token("<")]
+    Lt,        // <
+    #[token("<=")]
+    Le,        // <=
+    #[token(">")]
+    Gt,        // >
+    #[token(">=")]
+    Ge,        // >=
+    #[token("==")]
+    Eq,        // ==
+    #[token("!=")]
+    Ne,        // !=
+    #[token("&")]
+    And,       // &
+    #[token("^")]
+    Xor,       // ^
+    #[token("|")]
+    Or,        // |
+    #[token("&&")]
+    LAnd,      // &&
+    #[token("||")]
+    LOr,       // ||
     #[token("(")]
     LParen,    // (
     #[token(")")]
