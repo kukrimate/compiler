@@ -130,9 +130,6 @@ pub enum Token {
     // Indentifiers
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| symtab_put(lex.slice()))]
     Ident(Rc<str>),
-    // Labels
-    #[regex(r"@[a-zA-Z_][a-zA-Z0-9_]*", |lex| symtab_put(&lex.slice()[1..]))]
-    Label(Rc<str>),
 
     // Symbols
     #[token("=")]

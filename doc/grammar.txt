@@ -44,9 +44,9 @@
 <type-list> ::= <type-declaration>
               | <type-list> , <type-declaration>
 
-<statement> ::= <label> :
+<statement> ::= <identifier> :
               | <conditional-jump> <label> , <expression> , <expression> ;
-              | jmp <label> ;
+              | jmp <identifier> ;
               | auto <identifier> [: <type-declaration>] [= <initializer>] ;
               | eval <expression> ;
               | set <expression> , <expression> ;

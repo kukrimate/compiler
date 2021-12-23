@@ -15,8 +15,8 @@ fn export main() {
     // Initialize array, then print its contents
     auto arr: [i32; 5] = { 0, 1, 2, 3, 4 };
     auto i = 0i32;
-@loop:
+loop:
     eval printf("%d\n", arr[i]);
     set i = i + 1;
-    jl @loop, i, 5;
+    jl loop, i, 5;
 }

@@ -404,19 +404,6 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_label(&mut self) -> Rc<str> {
-        match &self.tmp {
-            Some(Token::Label(_)) => {
-                if let Token::Label(s) = self.next_token() {
-                    s
-                } else {
-                    unreachable!()
-                }
-            },
-            tok => panic!("Expected label, got {:?}!", tok),
-        }
-    }
-
     fn maybe_want_vis(&mut self) -> Vis {
         if maybe_want!(self, Token::Export) {
             Vis::Export
@@ -713,8 +700,8 @@ impl<'source> Parser<'source> {
 
     fn want_stmt(&mut self) -> Stmt {
         let stmt = match self.next_token() {
-            Token::Eval     => Stmt::Eval(self.want_expr()),
-            Token::Ret      => {
+            Token::Eval => Stmt::Eval(self.want_expr()),
+            Token::Ret => {
                 if maybe_want!(self, Token::Semicolon) {
                     // NOTE: return since we already have the semicolon
                     return Stmt::Ret(None)
@@ -722,7 +709,7 @@ impl<'source> Parser<'source> {
                     Stmt::Ret(Some(self.want_expr()))
                 }
             },
-            Token::Auto     => {
+            Token::Auto => {
                 let ident = self.want_ident();
                 let dtype = if maybe_want!(self, Token::Colon) {
                     self.want_type()
@@ -735,50 +722,52 @@ impl<'source> Parser<'source> {
                 }
                 Stmt::Auto(ident, dtype, init)
             },
-            Token::Label(s) => Stmt::Label(s),
+            Token::Ident(s) => {
+                Stmt::Label(s)
+            },
             Token::Set      => {
                 let var = self.want_expr();
                 want!(self, Token::Eq, "Expected =");
                 Stmt::Set(var, self.want_expr())
             },
-            Token::Jmp      => Stmt::Jmp(self.want_label()),
+            Token::Jmp      => Stmt::Jmp(self.want_ident()),
             Token::Jeq      => {
-                let label = self.want_label();
+                let label = self.want_ident();
                 want!(self, Token::Comma, "Expected ,");
                 let expr1 = self.want_expr();
                 want!(self, Token::Comma, "Expected ,");
                 Stmt::Jeq(label, expr1, self.want_expr())
             },
             Token::Jneq     => {
-                let label = self.want_label();
+                let label = self.want_ident();
                 want!(self, Token::Comma, "Expected ,");
                 let expr1 = self.want_expr();
                 want!(self, Token::Comma, "Expected ,");
                 Stmt::Jneq(label, expr1, self.want_expr())
             },
             Token::Jl       => {
-                let label = self.want_label();
+                let label = self.want_ident();
                 want!(self, Token::Comma, "Expected ,");
                 let expr1 = self.want_expr();
                 want!(self, Token::Comma, "Expected ,");
                 Stmt::Jl(label, expr1, self.want_expr())
             },
             Token::Jle      => {
-                let label = self.want_label();
+                let label = self.want_ident();
                 want!(self, Token::Comma, "Expected ,");
                 let expr1 = self.want_expr();
                 want!(self, Token::Comma, "Expected ,");
                 Stmt::Jle(label, expr1, self.want_expr())
             },
             Token::Jg       => {
-                let label = self.want_label();
+                let label = self.want_ident();
                 want!(self, Token::Comma, "Expected ,");
                 let expr1 = self.want_expr();
                 want!(self, Token::Comma, "Expected ,");
                 Stmt::Jg(label, expr1, self.want_expr())
             },
             Token::Jge      => {
-                let label = self.want_label();
+                let label = self.want_ident();
                 want!(self, Token::Comma, "Expected ,");
                 let expr1 = self.want_expr();
                 want!(self, Token::Comma, "Expected ,");
