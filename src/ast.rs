@@ -441,7 +441,7 @@ pub enum Stmt {
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
-    If(Expr, Vec<Stmt>, Option<Vec<Stmt>>),
+    If(Expr, Box<Stmt>, Option<Box<Stmt>>),
     While(Expr, Vec<Stmt>),
 }
 
@@ -867,6 +867,22 @@ impl<'source> Parser<'source> {
         stmts
     }
 
+    fn want_if(&mut self) -> Stmt {
+        let cond = self.want_expr();
+        want!(self, Token::LCurly, "Expected left curly");
+        let then = Box::new(Stmt::Block(self.want_block()));
+        let _else = if maybe_want!(self, Token::Else) {
+            Some(Box::new(match self.next_token() {
+                Token::LCurly => Stmt::Block(self.want_block()),
+                Token::If => self.want_if(),
+                _ => panic!("Expected block or if after else")
+            }))
+        } else {
+            None
+        };
+        Stmt::If(cond, then, _else)
+    }
+
     fn want_stmt(&mut self) -> Stmt {
         match self.next_token() {
             Token::LCurly => Stmt::Block(self.want_block()),
@@ -917,16 +933,7 @@ impl<'source> Parser<'source> {
                 stmt
             },
             Token::If => {
-                let cond = self.want_expr();
-                want!(self, Token::LCurly, "Expected left curly");
-                let then = self.want_block();
-                let _else = if maybe_want!(self, Token::Else) {
-                    want!(self, Token::LCurly, "Expected left curly");
-                    Some(self.want_block())
-                } else {
-                    None
-                };
-                Stmt::If(cond, then, _else)
+                self.want_if()
             },
             Token::While => {
                 let cond = self.want_expr();

@@ -14,7 +14,7 @@
                | <declaration-list> , ...
                | ...
 
-<block-or-semicolon> ::= <block>
+<block-or-semicolon> ::= <block-statement>
                        | ;
 
 <declaration-list> ::= <declaration>
@@ -45,17 +45,21 @@
 <type-list> ::= <type-declaration>
               | <type-list> , <type-declaration>
 
-<statement> ::= <block>
+<statement> ::= <block-statement>
+              | <if-statement>
+              | <while-statement>
               | <identifier> :
               | jmp <identifier> ;
-              | if <expression> <block>
-              | while <expression> <block>
               | auto <identifier> [: <type-declaration>] [= <initializer>] ;
               | eval <expression> ;
               | set <expression> = <expression> ;
               | ret [<expression>] ;
 
-<block> ::= { {<statement>}* }
+<block-statement> ::= { {<statement>}* }
+
+<if-statement> ::= if <expression> <block-statement> [else (<if-statement>|<block-statement>)]
+
+<while-statement> ::= while <expression> <block-statement>
 
 <expression> ::= <lor-expression>
 

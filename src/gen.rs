@@ -9,14 +9,19 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
 
-fn asm_dataword(dtype: &Type) -> &str {
-    match dtype {
-        Type::U8|Type::I8 => "db",
-        Type::U16|Type::I16 => "dw",
-        Type::U32|Type::I32 => "dd",
-        Type::U64|Type::I64 => "dq",
-        _ => unreachable!(),
+fn is_signed(ty: &Type) -> bool {
+    match ty {
+        Type::I8|Type::I16|Type::I32|Type::I64 => true,
+        _ => false
     }
+}
+
+#[derive(Clone,Copy)]
+enum Width {
+    Byte,
+    Word,
+    DWord,
+    QWord,
 }
 
 #[derive(Clone,Copy)]
@@ -35,6 +40,32 @@ enum Reg {
     R13 = 11,
     R14 = 12,
     R15 = 13,*/
+}
+
+fn reg_str(width: Width, reg: Reg) -> &'static str {
+    match width {
+        Width::Byte
+            => ["al", "bl", "cl", "dl", "sil", "dil", "r8b", "r9b", "r10b",
+                "r11b", "r12b", "r13b", "r14b", "r15b"][reg as usize],
+        Width::Word
+            => ["ax", "bx", "cx", "dx", "si", "di", "r8w", "r9w", "r10w",
+                "r11w", "r12w", "r13w", "r14w", "r15w"][reg as usize],
+        Width::DWord
+            => ["eax", "ebx", "ecx", "edx", "esi", "edi", "r8d", "r9d", "r10d",
+                "r11d", "r12d", "r13d", "r14d", "r15d"][reg as usize],
+        Width::QWord
+            => ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10",
+                "r11", "r12", "r13", "r14", "r15"][reg as usize],
+    }
+}
+
+fn loc_str(width: Width) -> &'static str {
+    match width {
+        Width::Byte => "byte",
+        Width::Word => "word",
+        Width::DWord => "dword",
+        Width::QWord => "qword",
+    }
 }
 
 impl Reg {
@@ -57,6 +88,53 @@ impl Reg {
             _
                 => panic!("Read or write to non-primtive type {:?}", dtype),
         }
+    }
+}
+
+#[derive(Clone,Copy)]
+enum Cond {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
+fn cond_str(signed: bool, cond: Cond) -> &'static str {
+    match cond {
+        Cond::Lt => if signed {
+            "jl"
+        } else {
+            "jb"
+        },
+        Cond::Le => if signed {
+            "jle"
+        } else {
+            "jbe"
+        },
+        Cond::Gt => if signed {
+            "jg"
+        } else {
+            "ja"
+        },
+        Cond::Ge => if signed {
+            "jge"
+        } else {
+            "jae"
+        },
+        Cond::Eq => "je",
+        Cond::Ne => "jne",
+    }
+}
+
+fn asm_dataword(dtype: &Type) -> &str {
+    match dtype {
+        Type::U8|Type::I8 => "db",
+        Type::U16|Type::I16 => "dw",
+        Type::U32|Type::I32 => "dd",
+        Type::U64|Type::I64 => "dq",
+        _ => unreachable!(),
     }
 }
 
@@ -195,7 +273,7 @@ impl Val {
     fn set_from_reg(&self, text: &mut String, dtype: &Type, reg: Reg, tmp_reg: Reg) {
         let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
         match self {
-            Val::Imm(val)
+            Val::Imm(_)
                 => panic!("Cannot write to constant"),
             Val::Off(offset)
                 => writeln!(text, "mov [rsp + {}], {}", offset, reg.to_str(dtype)).unwrap(),
@@ -205,24 +283,6 @@ impl Val {
                 ptr.val_to_reg(text, &void_ptr, tmp_reg);
                 writeln!(text, "mov [{} + {}], {}",
                     tmp_reg.to_str(&void_ptr), offset, reg.to_str(dtype)).unwrap();
-            },
-            Val::Void => panic!("Use of void value"),
-        }
-    }
-
-    fn set_from_const(&self, text: &mut String, val: usize, tmp_reg: Reg) {
-        let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
-        match self {
-            Val::Imm(val)
-                => panic!("Cannot write to constant"),
-            Val::Off(offset)
-                => writeln!(text, "mov [rsp + {}], {}", offset, val).unwrap(),
-            Val::Sym(name, offset)
-                => writeln!(text, "mov [{} + {}], {}", name, offset, val).unwrap(),
-            Val::Deref(ptr, offset) => {
-                ptr.val_to_reg(text, &void_ptr, tmp_reg);
-                writeln!(text, "mov [{} + {}], {}",
-                    tmp_reg.to_str(&void_ptr), offset, val).unwrap();
             },
             Val::Void => panic!("Use of void value"),
         }
@@ -376,10 +436,56 @@ impl Gen {
         label
     }
 
+    // Load a pointer value
+    fn gen_ptr_load(&mut self, reg: Reg, val: &Val) {
+        let dreg = reg_str(Width::QWord, reg);
+        match val {
+            Val::Void => unreachable!(),
+            Val::Imm(val) => writeln!(self.code, "mov {}, {}", dreg, val).unwrap(),
+            Val::Off(offset) => writeln!(self.code, "mov {}, [rsp + {}]", dreg, offset).unwrap(),
+            Val::Sym(name, offset) => writeln!(self.code, "mov {}, [{} + {}]", dreg, name, offset).unwrap(),
+            Val::Deref(ptr, offset) => {
+                self.gen_ptr_load(reg, ptr);
+                writeln!(self.code, "mov {}, [{} + {}]", dreg, dreg, offset).unwrap()
+            },
+        }
+    }
+
+    // Load an arithmetic value
+    fn gen_arith_load(&mut self, reg: Reg, ty: &Type, val: &Val) -> &'static str {
+        // Which instruction do we need, and what width do we extend to?
+        let (insn, dreg, sloc) = match ty {
+            // 8-bit/16-bit types extend to 32-bits
+            Type::U8 => ("movzx", reg_str(Width::DWord, reg), loc_str(Width::Byte)),
+            Type::I8 => ("movsx", reg_str(Width::DWord, reg), loc_str(Width::Byte)),
+            Type::U16 => ("movzx", reg_str(Width::DWord, reg), loc_str(Width::Word)),
+            Type::I16 => ("movsx", reg_str(Width::DWord, reg), loc_str(Width::Word)),
+            // 32-bit and 64-bit types don't get extended
+            Type::U32|Type::I32 => ("mov", reg_str(Width::DWord, reg), loc_str(Width::DWord)),
+            Type::U64|Type::I64 => ("mov", reg_str(Width::QWord, reg), loc_str(Width::QWord)),
+            _ => panic!("Expected arithmetic type"),
+        };
+        match val {
+            Val::Void => unreachable!(),
+            Val::Imm(val)
+                => writeln!(self.code, "mov {}, {}", dreg, val).unwrap(),
+            Val::Off(offset)
+                => writeln!(self.code, "{} {}, {} [rsp + {}]", insn, dreg, sloc, offset).unwrap(),
+            Val::Sym(name, offset)
+                => writeln!(self.code, "{} {}, {} [{} + {}]", insn, dreg, sloc, name, offset).unwrap(),
+            Val::Deref(ptr, offset) => {
+                self.gen_ptr_load(reg, ptr);
+                writeln!(self.code, "{} {}, {} [{} + {}]",
+                    insn, dreg, sloc, reg_str(Width::QWord, reg), offset).unwrap()
+            },
+        }
+        dreg
+    }
+
     fn gen_unary(&mut self, op: &str, expr: Expr) -> (Type, Val) {
         let (expr_type, expr_val) = self.gen_expr(expr);
-        expr_val.val_to_reg(&mut self.code, &expr_type, Reg::Rax);
-        writeln!(self.code, "{} {}", op, Reg::Rax.to_str(&expr_type)).unwrap();
+        let expr_reg = self.gen_arith_load(Reg::Rax, &expr_type, &expr_val);
+        writeln!(self.code, "{} {}", op, expr_reg).unwrap();
         let result = self.alloc_temporary(&expr_type);
         result.set_from_reg(&mut self.code, &expr_type, Reg::Rax, Reg::Rbx);
         (expr_type, result)
@@ -389,36 +495,62 @@ impl Gen {
         // Evaluate operands
         let (lhs_type, lhs_val) = self.gen_expr(lhs);
         let (rhs_type, rhs_val) = self.gen_expr(rhs);
-        let result_type = Type::do_deduce(lhs_type, rhs_type);
-
-        lhs_val.val_to_reg(&mut self.code, &result_type, Reg::Rax);
-        rhs_val.val_to_reg(&mut self.code, &result_type, Reg::Rbx);
+        let ty = Type::do_deduce(lhs_type, rhs_type);
 
         // Do operation
-        writeln!(self.code, "{} {}, {}", op,
-            Reg::Rax.to_str(&result_type),
-            Reg::Rbx.to_str(&result_type)).unwrap();
+        let lhs_reg = self.gen_arith_load(Reg::Rax, &ty, &lhs_val);
+        let rhs_reg = self.gen_arith_load(Reg::Rbx, &ty, &rhs_val);
+        writeln!(self.code, "{} {}, {}", op, lhs_reg, rhs_reg).unwrap();
+
         // Save result to temporary
-        let result = self.alloc_temporary(&result_type);
-        result.set_from_reg(&mut self.code, &result_type, Reg::Rax, Reg::Rbx);
-        (result_type, result)
+        let result = self.alloc_temporary(&ty);
+        result.set_from_reg(&mut self.code, &ty, Reg::Rax, Reg::Rbx);
+        (ty, result)
     }
 
     fn gen_shift(&mut self, op: &str, lhs: Expr, rhs: Expr) -> (Type, Val) {
         // Evaluate operands
         let (lhs_type, lhs_val) = self.gen_expr(lhs);
         let (rhs_type, rhs_val) = self.gen_expr(rhs);
-        let result_type = Type::do_deduce(lhs_type, rhs_type);
-
-        lhs_val.val_to_reg(&mut self.code, &result_type, Reg::Rax);
-        rhs_val.val_to_reg(&mut self.code, &result_type, Reg::Rcx);
 
         // Do operation
-        writeln!(self.code, "{} {}, cl", op, Reg::Rax.to_str(&result_type)).unwrap();
+        let lhs_reg = self.gen_arith_load(Reg::Rax, &lhs_type, &lhs_val);
+        self.gen_arith_load(Reg::Rcx, &rhs_type, &rhs_val);
+        writeln!(self.code, "{} {}, cl", op, lhs_reg).unwrap();
+
         // Save result to temporary
-        let result = self.alloc_temporary(&result_type);
-        result.set_from_reg(&mut self.code, &result_type, Reg::Rax, Reg::Rbx);
-        (result_type, result)
+        let result = self.alloc_temporary(&lhs_type);
+        result.set_from_reg(&mut self.code, &lhs_type, Reg::Rax, Reg::Rbx);
+        (lhs_type, result)
+    }
+
+    fn gen_divmod(&mut self, is_mod: bool, lhs: Expr, rhs: Expr) -> (Type, Val) {
+        // Evaluate operands
+        let (lhs_type, lhs_val) = self.gen_expr(lhs);
+        let (rhs_type, rhs_val) = self.gen_expr(rhs);
+        let ty = Type::do_deduce(lhs_type, rhs_type);
+
+        // Do operation
+        self.gen_arith_load(Reg::Rax, &ty, &lhs_val);
+        let rhs_reg = self.gen_arith_load(Reg::Rbx, &ty, &rhs_val);
+
+        // x86 only has full-division with the upper half in dx
+        writeln!(self.code, "xor edx, edx").unwrap();
+        // Division also differs based on type
+        if is_signed(&ty) {
+            writeln!(self.code, "idiv {}", rhs_reg).unwrap();
+        } else {
+            writeln!(self.code, "div {}", rhs_reg).unwrap();
+        }
+
+        // Save result to temporary
+        let result = self.alloc_temporary(&ty);
+        if is_mod { // Remainder in DX
+            result.set_from_reg(&mut self.code, &ty, Reg::Rdx, Reg::Rbx);
+        } else {    // Quotiend in AX
+            result.set_from_reg(&mut self.code, &ty, Reg::Rax, Reg::Rbx);
+        }
+        (ty, result)
     }
 
     fn gen_expr(&mut self, expr: Expr) -> (Type, Val) {
@@ -555,8 +687,10 @@ impl Gen {
                 => self.gen_binary("sub", *lhs, *rhs),
             Expr::Mul(lhs, rhs)
                 => self.gen_binary("imul", *lhs, *rhs),
-            Expr::Div(lhs, rhs) => todo!(),
-            Expr::Rem(lhs, rhs) => todo!(),
+            Expr::Div(lhs, rhs)
+                => self.gen_divmod(false, *lhs, *rhs),
+            Expr::Rem(lhs, rhs)
+                => self.gen_divmod(true, *lhs, *rhs),
             Expr::Or(lhs, rhs)
                 => self.gen_binary("or", *lhs, *rhs),
             Expr::And(lhs, rhs)
@@ -582,15 +716,20 @@ impl Gen {
                 let lfalse = self.next_label();
                 let lend = self.next_label();
                 self.gen_bool_expr(expr, ltrue, lfalse);
+
                 let ty = Type::Bool;
-                let val = self.alloc_temporary(&ty);
+                let off = self.stack_alloc(&ty);
+
+                // True case
                 writeln!(self.code, ".{}:", ltrue).unwrap();
-                val.set_from_const(&mut self.code, 1, Reg::Rbx);
+                writeln!(self.code, "mov byte [rsp + {}], 1", off).unwrap();
                 writeln!(self.code, "jmp .{}", lend).unwrap();
+                // False case
                 writeln!(self.code, ".{}:", lfalse).unwrap();
-                val.set_from_const(&mut self.code, 0, Reg::Rbx);
+                writeln!(self.code, "mov byte [rsp + {}], 0", off).unwrap();
                 writeln!(self.code, ".{}:", lend).unwrap();
-                (ty, val)
+
+                (ty, Val::Off(off))
             },
 
             // Cast
@@ -602,44 +741,56 @@ impl Gen {
         }
     }
 
+    fn gen_jcc(&mut self, cond: Cond, label: usize, lhs: Expr, rhs: Expr) {
+        let (lhs_type, lhs_val) = self.gen_expr(lhs);
+        let (rhs_type, rhs_val) = self.gen_expr(rhs);
+        let ty = Type::do_deduce(lhs_type, rhs_type);
+
+        let lhs_reg = self.gen_arith_load(Reg::Rax, &ty, &lhs_val);
+        let rhs_reg = self.gen_arith_load(Reg::Rbx, &ty, &rhs_val);
+
+        writeln!(self.code, "cmp {}, {}\n{} .{}", lhs_reg, rhs_reg,
+            cond_str(is_signed(&ty), cond), label).unwrap();
+
+    }
+
     fn gen_bool_expr(&mut self, expr: Expr, ltrue: usize, lfalse: usize) {
         match expr {
             Expr::LNot(expr) => self.gen_bool_expr(*expr, lfalse, ltrue),
-            // FIXME: these are all unsigned
             Expr::Lt(lhs, rhs) => {
-                self.gen_jcc("jb", &format!("{}", ltrue), *lhs, *rhs);
+                self.gen_jcc(Cond::Lt, ltrue, *lhs, *rhs);
                 writeln!(self.code, "jmp .{}", lfalse).unwrap();
             },
             Expr::Le(lhs, rhs) => {
-                self.gen_jcc("jbe", &format!("{}", ltrue), *lhs, *rhs);
+                self.gen_jcc(Cond::Le, ltrue, *lhs, *rhs);
                 writeln!(self.code, "jmp .{}", lfalse).unwrap();
             },
             Expr::Gt(lhs, rhs) => {
-                self.gen_jcc("ja", &format!("{}", ltrue), *lhs, *rhs);
+                self.gen_jcc(Cond::Gt, ltrue, *lhs, *rhs);
                 writeln!(self.code, "jmp .{}", lfalse).unwrap();
             },
             Expr::Ge(lhs, rhs) => {
-                self.gen_jcc("jae", &format!("{}", ltrue), *lhs, *rhs);
+                self.gen_jcc(Cond::Ge, ltrue, *lhs, *rhs);
                 writeln!(self.code, "jmp .{}", lfalse).unwrap();
             },
             Expr::Eq(lhs, rhs) => {
-                self.gen_jcc("je", &format!("{}", ltrue), *lhs, *rhs);
+                self.gen_jcc(Cond::Eq, ltrue, *lhs, *rhs);
                 writeln!(self.code, "jmp .{}", lfalse).unwrap();
             },
             Expr::Ne(lhs, rhs) => {
-                self.gen_jcc("jne", &format!("{}", ltrue), *lhs, *rhs);
+                self.gen_jcc(Cond::Ne, ltrue, *lhs, *rhs);
                 writeln!(self.code, "jmp .{}", lfalse).unwrap();
             },
             Expr::LAnd(lhs, rhs) => {
                 let lmid = self.next_label();
                 self.gen_bool_expr(*lhs, lmid, lfalse);
-                writeln!(self.code, ".{}", lmid).unwrap();
+                writeln!(self.code, ".{}:", lmid).unwrap();
                 self.gen_bool_expr(*rhs, ltrue, lfalse);
             },
             Expr::LOr(lhs, rhs) => {
                 let lmid = self.next_label();
                 self.gen_bool_expr(*lhs, ltrue, lmid);
-                writeln!(self.code, ".{}", lmid).unwrap();
+                writeln!(self.code, ".{}:", lmid).unwrap();
                 self.gen_bool_expr(*rhs, ltrue, lfalse);
             }
             expr => {
@@ -692,104 +843,97 @@ impl Gen {
         }
     }
 
-    fn gen_jcc(&mut self, jmp_op: &str, label: &str, lhs: Expr, rhs: Expr) {
-        let (lhs_type, lhs_val) = self.gen_expr(lhs);
-        let (rhs_type, rhs_val) = self.gen_expr(rhs);
-        let comp_type = Type::do_deduce(lhs_type, rhs_type);
-        lhs_val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
-        rhs_val.val_to_reg(&mut self.code, &comp_type, Reg::Rbx);
-        writeln!(self.code, "cmp {}, {}\n{} .{}",
-            Reg::Rax.to_str(&comp_type), Reg::Rbx.to_str(&comp_type),
-            jmp_op, label).unwrap();
+    fn gen_stmt(&mut self, rettype: &Type, stmt: Stmt) {
+        match stmt {
+            Stmt::Block(stmts) => {
+                self.symtab.push_scope();
+                self.gen_stmts(rettype, stmts);
+                self.symtab.pop_scope();
+            },
+            Stmt::Eval(expr) => {
+                self.gen_expr(expr);
+            },
+            Stmt::Ret(opt_expr) => {
+                // Evaluate return value if present
+                if let Some(expr) = opt_expr {
+                    let (val_type, val) = self.gen_expr(expr);
+                    let comp_type = Type::do_deduce(val_type, rettype.clone());
+                    val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
+                }
+                // Then jump to the end of function
+                writeln!(&mut self.code, "jmp .$done").unwrap();
+            },
+            Stmt::Auto(name, dtype, opt_init) => {
+                if let Some(init) = opt_init {
+                    if let Type::Deduce = dtype {
+                        // Special case needed as we can't deduce type until the initializer is processed
+                        let (init_type, init_val) = self.gen_init_expr(dtype, init.want_expr());
+                        init_val.val_to_reg(&mut self.code, &init_type, Reg::Rax);
+                        let offset = self.stack_alloc(&init_type);
+                        Val::Off(offset).set_from_reg(&mut self.code, &init_type, Reg::Rax, Reg::Rbx);
+                        self.symtab.insert(name, Sym::make_local(init_type, offset));
+                    } else {
+                        // Herre we can just allocate straight away
+                        let offset = self.stack_alloc(&dtype);
+                        self.gen_init_list(dtype.clone(), Val::Off(offset), init);
+                        self.symtab.insert(name, Sym::make_local(dtype, offset));
+                    }
+                } else {
+                    // Otherwise just allocate space
+                    if let Type::Deduce = dtype {
+                        panic!("Asked for type deduction, but no initializer was provided")
+                    }
+                    let offset = self.stack_alloc(&dtype);
+                    self.symtab.insert(name, Sym::make_local(dtype, offset));
+                }
+            },
+            Stmt::Label(label)
+                => writeln!(&mut self.code, ".{}:", label).unwrap(),
+            Stmt::Set(dest, src) => {
+                let (dest_type, dest_val) = self.gen_expr(dest);
+                let (src_type, src_val) = self.gen_expr(src);
+                let comp_type = Type::do_deduce(src_type, dest_type);
+                src_val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
+                dest_val.set_from_reg(&mut self.code, &comp_type, Reg::Rax, Reg::Rbx);
+            },
+            Stmt::Jmp(label)
+                => writeln!(&mut self.code, "jmp .{}", label).unwrap(),
+            Stmt::If(cond, then, opt_else) => {
+                let lthen = self.next_label();
+                let lelse = self.next_label();
+                let lend = self.next_label();
+
+                self.gen_bool_expr(cond, lthen, lelse);
+
+                writeln!(self.code, ".{}:", lthen).unwrap();
+                self.gen_stmt(rettype, *then);
+                writeln!(self.code, "jmp .{}", lend).unwrap();
+
+                writeln!(self.code, ".{}:", lelse).unwrap();
+                if let Some(_else) = opt_else {
+                    self.gen_stmt(rettype, *_else);
+                }
+
+                writeln!(self.code, ".{}:", lend).unwrap();
+            },
+            Stmt::While(cond, body) => {
+                let ltest = self.next_label();
+                let lbody = self.next_label();
+                let lend = self.next_label();
+                writeln!(self.code, ".{}:", ltest).unwrap();
+                self.gen_bool_expr(cond, lbody, lend);
+                self.symtab.push_scope();
+                writeln!(self.code, ".{}:", lbody).unwrap();
+                self.gen_stmts(rettype, body);
+                self.symtab.pop_scope();
+                writeln!(self.code, "jmp .{}\n.{}:", ltest, lend).unwrap();
+            },
+        }
     }
 
     fn gen_stmts(&mut self, rettype: &Type, stmts: Vec<Stmt>) {
         for stmt in stmts.into_iter() {
-            match stmt {
-                Stmt::Block(stmts) => {
-                    self.symtab.push_scope();
-                    self.gen_stmts(rettype, stmts);
-                    self.symtab.pop_scope();
-                },
-                Stmt::Eval(expr) => {
-                    self.gen_expr(expr);
-                },
-                Stmt::Ret(opt_expr) => {
-                    // Evaluate return value if present
-                    if let Some(expr) = opt_expr {
-                        let (val_type, val) = self.gen_expr(expr);
-                        let comp_type = Type::do_deduce(val_type, rettype.clone());
-                        val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
-                    }
-                    // Then jump to the end of function
-                    writeln!(&mut self.code, "jmp .$done").unwrap();
-                },
-                Stmt::Auto(name, dtype, opt_init) => {
-                    if let Some(init) = opt_init {
-                        if let Type::Deduce = dtype {
-                            // Special case needed as we can't deduce type until the initializer is processed
-                            let (init_type, init_val) = self.gen_init_expr(dtype, init.want_expr());
-                            init_val.val_to_reg(&mut self.code, &init_type, Reg::Rax);
-                            let offset = self.stack_alloc(&init_type);
-                            Val::Off(offset).set_from_reg(&mut self.code, &init_type, Reg::Rax, Reg::Rbx);
-                            self.symtab.insert(name, Sym::make_local(init_type, offset));
-                        } else {
-                            // Herre we can just allocate straight away
-                            let offset = self.stack_alloc(&dtype);
-                            self.gen_init_list(dtype.clone(), Val::Off(offset), init);
-                            self.symtab.insert(name, Sym::make_local(dtype, offset));
-                        }
-                    } else {
-                        // Otherwise just allocate space
-                        if let Type::Deduce = dtype {
-                            panic!("Asked for type deduction, but no initializer was provided")
-                        }
-                        let offset = self.stack_alloc(&dtype);
-                        self.symtab.insert(name, Sym::make_local(dtype, offset));
-                    }
-                },
-                Stmt::Label(label)
-                    => writeln!(&mut self.code, ".{}:", label).unwrap(),
-                Stmt::Set(dest, src) => {
-                    let (dest_type, dest_val) = self.gen_expr(dest);
-                    let (src_type, src_val) = self.gen_expr(src);
-                    let comp_type = Type::do_deduce(src_type, dest_type);
-                    src_val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
-                    dest_val.set_from_reg(&mut self.code, &comp_type, Reg::Rax, Reg::Rbx);
-                },
-                Stmt::Jmp(label)
-                    => writeln!(&mut self.code, "jmp .{}", label).unwrap(),
-                Stmt::If(cond, then, opt_else) => {
-                    let lthen = self.next_label();
-                    let lelse = self.next_label();
-
-                    self.gen_bool_expr(cond, lthen, lelse);
-
-                    writeln!(self.code, ".{}:", lthen).unwrap();
-                    self.symtab.push_scope();
-                    self.gen_stmts(rettype, then);
-                    self.symtab.pop_scope();
-
-                    writeln!(self.code, ".{}:", lelse).unwrap();
-                    if let Some(_else) = opt_else {
-                        self.symtab.push_scope();
-                        self.gen_stmts(rettype, _else);
-                        self.symtab.pop_scope();
-                    }
-                },
-                Stmt::While(cond, body) => {
-                    let ltest = self.next_label();
-                    let lbody = self.next_label();
-                    let lend = self.next_label();
-                    writeln!(self.code, ".{}:", ltest).unwrap();
-                    self.gen_bool_expr(cond, lbody, lend);
-                    self.symtab.push_scope();
-                    writeln!(self.code, ".{}:", lbody).unwrap();
-                    self.gen_stmts(rettype, body);
-                    self.symtab.pop_scope();
-                    writeln!(self.code, "jmp .{}\n.{}:", ltest, lend).unwrap();
-                },
-            }
+            self.gen_stmt(rettype, stmt);
         }
     }
 
