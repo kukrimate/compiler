@@ -7,7 +7,11 @@ record Foo {
 
 fn export main() {
     // Initialize record
-    auto foo: Foo = { 1, 2 };
+    auto foo = Foo {
+        a: 1,
+        b: 2,
+    };
+
     // Print fields
     eval printf("foo.a = %d\n", foo.a);
     eval printf("foo.b = %d\n", foo.b);

@@ -116,10 +116,12 @@ impl Type {
 // Abstract syntax tree elements
 //
 
-#[derive(Debug)]
+#[derive(Clone,Debug)]
 pub enum Expr {
     // Constant value
     Const(Type, usize),
+    // Record literal
+    Record(Type, Vec<(Type, usize, Expr)>),
     // Reference to symbol
     Sym(Rc<str>),
     // Pointer ref/deref
@@ -542,6 +544,46 @@ impl<'source> Parser<'source> {
         suf
     }
 
+    fn want_record_literal(&mut self, name: Rc<str>) -> Expr {
+        // Find record type
+        let ty = if let Some(ty) = self.records.get(&name) {
+            ty.clone()
+        } else {
+            panic!("Unknown record {}", name)
+        };
+        let (lookup, fields) = if let Type::Record { lookup, fields, .. } = &ty {
+            (lookup, fields)
+        } else {
+            unreachable!()
+        };
+        // Read fields
+        let mut field_vals = vec![None; fields.len()];
+        while !maybe_want!(self, Token::RCurly) {
+            let field_name = self.want_ident();
+            let (idx, field_ty, off) = if let Some(idx) = lookup.get(&field_name) {
+                (*idx, fields[*idx].0.clone(), fields[*idx].1)
+            } else {
+                panic!("Unknown field {}", field_name)
+            };
+            want!(self, Token::Colon, "Expected :");
+            if let None = field_vals[idx] {
+                field_vals[idx] = Some((field_ty, off, self.want_expr()));
+            } else {
+                panic!("Duplicate initializer for field {}", field_name);
+            }
+            if !maybe_want!(self, Token::Comma) {
+                want!(self, Token::RCurly, "Expected }");
+                break;
+            }
+        }
+        // Create record literal
+        Expr::Record(ty, field_vals.into_iter().map(|opt| if let Some(val) = opt {
+            val
+        } else {
+            panic!("Record literal must initialize all fields")
+        }).collect())
+    }
+
     fn want_primary(&mut self) -> Expr {
         match self.next_token() {
             Token::LParen => {
@@ -555,8 +597,12 @@ impl<'source> Parser<'source> {
                 // Replace string literal with reference to internal symbol
                 Expr::Ref(Box::from(string_sym))
             },
-            Token::Ident(s)
-                => Expr::Sym(s),
+            Token::Ident(val)
+                => if maybe_want!(self, Token::LCurly) {
+                    self.want_record_literal(val)
+                } else {
+                    Expr::Sym(val)
+                },
             Token::Constant(val)
                 => Expr::Const(self.want_type_suffix(), val),
             Token::True

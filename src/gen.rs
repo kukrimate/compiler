@@ -18,10 +18,20 @@ fn is_signed(ty: &Type) -> bool {
 
 #[derive(Clone,Copy)]
 enum Width {
-    Byte,
-    Word,
-    DWord,
-    QWord,
+    Byte    = 1,
+    Word    = 2,
+    DWord   = 4,
+    QWord   = 8,
+}
+
+// Find the largest width operation possible on size bytes
+fn max_width(size: usize) -> Width {
+    for width in [ Width::QWord, Width::DWord, Width::Word, Width::Byte ] {
+        if width as usize <= size {
+            return width;
+        }
+    }
+    unreachable!();
 }
 
 #[derive(Clone,Copy)]
@@ -436,17 +446,32 @@ impl Gen {
         label
     }
 
-    // Load a pointer value
-    fn gen_ptr_load(&mut self, reg: Reg, val: &Val) {
-        let dreg = reg_str(Width::QWord, reg);
+    // Load a value with a certain width to a register
+    fn gen_load(&mut self, width: Width, reg: Reg, val: &Val) {
+        let dreg = reg_str(width, reg);
         match val {
             Val::Void => unreachable!(),
             Val::Imm(val) => writeln!(self.code, "mov {}, {}", dreg, val).unwrap(),
             Val::Off(offset) => writeln!(self.code, "mov {}, [rsp + {}]", dreg, offset).unwrap(),
             Val::Sym(name, offset) => writeln!(self.code, "mov {}, [{} + {}]", dreg, name, offset).unwrap(),
             Val::Deref(ptr, offset) => {
-                self.gen_ptr_load(reg, ptr);
+                self.gen_load(Width::QWord, reg, ptr);
                 writeln!(self.code, "mov {}, [{} + {}]", dreg, dreg, offset).unwrap()
+            },
+        }
+    }
+
+    // Store a register's contents into memory
+    fn gen_store(&mut self, width: Width, val: &Val, reg: Reg, tmp_reg: Reg) {
+        let sreg = reg_str(width, reg);
+        match val {
+            Val::Void | Val::Imm(_) => unreachable!(),
+            Val::Off(offset) => writeln!(self.code, "mov [rsp + {}], {}", offset, sreg).unwrap(),
+            Val::Sym(name, offset) => writeln!(self.code, "mov [{} + {}], {}", name, offset, sreg).unwrap(),
+            Val::Deref(ptr, offset) => {
+                self.gen_load(Width::QWord, tmp_reg, ptr);
+                writeln!(self.code, "mov [{} + {}], {}",
+                    reg_str(Width::QWord, tmp_reg), offset, sreg).unwrap()
             },
         }
     }
@@ -474,7 +499,7 @@ impl Gen {
             Val::Sym(name, offset)
                 => writeln!(self.code, "{} {}, {} [{} + {}]", insn, dreg, sloc, name, offset).unwrap(),
             Val::Deref(ptr, offset) => {
-                self.gen_ptr_load(reg, ptr);
+                self.gen_load(Width::QWord, reg, ptr);
                 writeln!(self.code, "{} {}, {} [{} + {}]",
                     insn, dreg, sloc, reg_str(Width::QWord, reg), offset).unwrap()
             },
@@ -557,6 +582,18 @@ impl Gen {
         match expr {
             // Constant value
             Expr::Const(dtype, val) => (dtype, Val::Imm(val)),
+            // Record literal
+            Expr::Record(ty, field_vals) => {
+                let dest = self.alloc_temporary(&ty);
+                for (mut field_ty, off, expr) in field_vals {
+                    let (field_ty2, field_val) = self.gen_expr(expr);
+                    field_ty = Type::do_deduce(field_ty, field_ty2);
+                    field_val.val_to_reg(&mut self.code, &field_ty, Reg::Rax);
+                    dest.with_offset(off).set_from_reg(&mut self.code,
+                        &field_ty, Reg::Rax, Reg::Rbx);
+                }
+                (ty, dest)
+            },
             // Reference to symbol
             Expr::Sym(name) => {
                 let sym = self.symtab.lookup(&name);
@@ -805,6 +842,24 @@ impl Gen {
         }
     }
 
+    fn gen_copy(&mut self, mut dst: Val, mut src: Val, mut size: usize) {
+        while size > 0 {
+            // Find the maximum width we can copy
+            let width = max_width(size);
+
+            // Do the copy
+            self.gen_load(width, Reg::Rax, &src);
+            self.gen_store(width, &dst, Reg::Rax, Reg::Rbx);
+
+            // Adjust for the next step
+            size -= width as usize;
+            if size > 0 {
+                src = src.with_offset(width as usize);
+                dst = dst.with_offset(width as usize);
+            }
+        }
+    }
+
     fn gen_init_expr(&mut self, dest_type: Type, expr: Expr) -> (Type, Val) {
         let (src_type, src_val) = self.gen_expr(expr);
         let comp_type = Type::do_deduce(dest_type, src_type);
@@ -815,9 +870,8 @@ impl Gen {
         match dest_type {
             Type::Bool | Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::U32
                      | Type::I32 | Type::U64 | Type::I64 | Type::Ptr {..} => {
-                let (comp_type, init_val) = self.gen_init_expr(dest_type, init.want_expr());
-                init_val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
-                dest_val.set_from_reg(&mut self.code, &comp_type, Reg::Rax, Reg::Rbx);
+                let (ty, src) = self.gen_init_expr(dest_type, init.want_expr());
+                self.gen_copy(dest_val, src, ty.get_size());
             },
             Type::Array { elem_type, elem_count } => {
                 let init_list = init.want_list();
@@ -868,12 +922,11 @@ impl Gen {
                     if let Type::Deduce = dtype {
                         // Special case needed as we can't deduce type until the initializer is processed
                         let (init_type, init_val) = self.gen_init_expr(dtype, init.want_expr());
-                        init_val.val_to_reg(&mut self.code, &init_type, Reg::Rax);
                         let offset = self.stack_alloc(&init_type);
-                        Val::Off(offset).set_from_reg(&mut self.code, &init_type, Reg::Rax, Reg::Rbx);
+                        self.gen_copy(Val::Off(offset), init_val, init_type.get_size());
                         self.symtab.insert(name, Sym::make_local(init_type, offset));
                     } else {
-                        // Herre we can just allocate straight away
+                        // Here we can just allocate straight away
                         let offset = self.stack_alloc(&dtype);
                         self.gen_init_list(dtype.clone(), Val::Off(offset), init);
                         self.symtab.insert(name, Sym::make_local(dtype, offset));
@@ -889,12 +942,14 @@ impl Gen {
             },
             Stmt::Label(label)
                 => writeln!(&mut self.code, ".{}:", label).unwrap(),
-            Stmt::Set(dest, src) => {
-                let (dest_type, dest_val) = self.gen_expr(dest);
-                let (src_type, src_val) = self.gen_expr(src);
-                let comp_type = Type::do_deduce(src_type, dest_type);
-                src_val.val_to_reg(&mut self.code, &comp_type, Reg::Rax);
-                dest_val.set_from_reg(&mut self.code, &comp_type, Reg::Rax, Reg::Rbx);
+            Stmt::Set(dst, src) => {
+                // Find source and destination value
+                let (t1, dval) = self.gen_expr(dst);
+                let (t2, sval) = self.gen_expr(src);
+                // Deduce combined type
+                let ty = Type::do_deduce(t1, t2);
+                // Perform copy
+                self.gen_copy(dval, sval, ty.get_size());
             },
             Stmt::Jmp(label)
                 => writeln!(&mut self.code, "jmp .{}", label).unwrap(),
