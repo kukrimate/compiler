@@ -34,6 +34,17 @@ fn max_width(size: usize) -> Width {
     unreachable!();
 }
 
+// Find the register size used for a parameter
+fn type_width(ty: &Type) -> Width {
+    match ty {
+        Type::Bool | Type::U8 | Type::I8 => Width::Byte,
+        Type::U16 | Type::I16 => Width::Word,
+        Type::U32 | Type::I32 => Width::DWord,
+        Type::U64 | Type::I64 | Type::Ptr{..} => Width::QWord,
+        _ => unreachable!(),
+    }
+}
+
 #[derive(Clone,Copy)]
 enum Reg {
     Rax = 0,
@@ -241,30 +252,24 @@ impl Val {
     fn ptr_to_reg(&self, text: &mut String, reg: Reg) {
         let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
         match self {
+            Val::Void => panic!("Use of void value"),
             Val::Imm(_) => panic!("Cannot take address of immediate"),
-            Val::Off(offset) => {
-                writeln!(text, "lea {}, [rsp + {}]",
-                    reg.to_str(&void_ptr), offset).unwrap();
-            },
-            Val::Sym(name, offset) => {
-                writeln!(text, "lea {}, [{} + {}]",
-                    reg.to_str(&void_ptr), name, offset).unwrap();
-            },
+            Val::Off(offset) => writeln!(text, "lea {}, [rsp + {}]", reg.to_str(&void_ptr), offset).unwrap(),
+            Val::Sym(name, offset) => writeln!(text, "lea {}, [{} + {}]", reg.to_str(&void_ptr), name, offset).unwrap(),
             Val::Deref(ptr, offset) => {
                 ptr.val_to_reg(text, &void_ptr, reg);
                 if *offset > 0 {
                     writeln!(text, "lea {}, [{} + {}]",
-                        reg.to_str(&void_ptr), reg.to_str(&void_ptr), offset)
-                    .unwrap();
+                        reg.to_str(&void_ptr), reg.to_str(&void_ptr), offset).unwrap();
                 }
             },
-            Val::Void => panic!("Use of void value"),
         }
     }
 
     fn val_to_reg(&self, text: &mut String, dtype: &Type, reg: Reg) {
         let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
         match self {
+            Val::Void => panic!("Use of void value"),
             Val::Imm(val)
                 => writeln!(text, "mov {}, {}", reg.to_str(dtype), val).unwrap(),
             Val::Off(offset)
@@ -276,35 +281,16 @@ impl Val {
                 writeln!(text, "mov {}, [{} + {}]",
                     reg.to_str(dtype), reg.to_str(&void_ptr), offset).unwrap();
             },
-            Val::Void => panic!("Use of void value"),
-        }
-    }
-
-    fn set_from_reg(&self, text: &mut String, dtype: &Type, reg: Reg, tmp_reg: Reg) {
-        let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
-        match self {
-            Val::Imm(_)
-                => panic!("Cannot write to constant"),
-            Val::Off(offset)
-                => writeln!(text, "mov [rsp + {}], {}", offset, reg.to_str(dtype)).unwrap(),
-            Val::Sym(name, offset)
-                => writeln!(text, "mov [{} + {}], {}", name, offset, reg.to_str(dtype)).unwrap(),
-            Val::Deref(ptr, offset) => {
-                ptr.val_to_reg(text, &void_ptr, tmp_reg);
-                writeln!(text, "mov [{} + {}], {}",
-                    tmp_reg.to_str(&void_ptr), offset, reg.to_str(dtype)).unwrap();
-            },
-            Val::Void => panic!("Use of void value"),
         }
     }
 
     fn with_offset(&self, add: usize) -> Val {
         match self {
+            Val::Void => panic!("Use of void value"),
+            Val::Imm(_) => panic!("Offset from immediate"),
             Val::Off(offset) => Val::Off(offset + add),
             Val::Sym(name, offset) => Val::Sym(name.clone(), offset + add),
             Val::Deref(ptr, offset) => Val::Deref(ptr.clone(), offset + add),
-            Val::Imm(_) => panic!("Offset from immediate"),
-            Val::Void => panic!("Use of void value"),
         }
     }
 }
@@ -389,7 +375,7 @@ impl Gen {
                 }
                 Type::do_deduce(Type::Array {
                     elem_count: elem_cnt,
-                    elem_type: Box::new (elem_ty),
+                    elem_type: Box::new(elem_ty),
                 }, dty)
             },
             Expr::Record(ty, fields) => {
@@ -475,6 +461,25 @@ impl Gen {
         }
     }
 
+    // Copy size bytes between two locations
+    fn gen_copy(&mut self, mut dst: Val, mut src: Val, mut size: usize) {
+        while size > 0 {
+            // Find the maximum width we can copy
+            let width = max_width(size);
+
+            // Do the copy
+            self.gen_load(width, Reg::Rax, &src);
+            self.gen_store(width, &dst, Reg::Rax, Reg::Rbx);
+
+            // Adjust for the next step
+            size -= width as usize;
+            if size > 0 {
+                src = src.with_offset(width as usize);
+                dst = dst.with_offset(width as usize);
+            }
+        }
+    }
+
     // Load an arithmetic value
     fn gen_arith_load(&mut self, reg: Reg, ty: &Type, val: &Val) -> &'static str {
         // Which instruction do we need, and what width do we extend to?
@@ -507,12 +512,13 @@ impl Gen {
     }
 
     fn gen_unary(&mut self, op: &str, expr: Expr) -> (Type, Val) {
-        let (expr_type, expr_val) = self.gen_expr(expr);
-        let expr_reg = self.gen_arith_load(Reg::Rax, &expr_type, &expr_val);
-        writeln!(self.code, "{} {}", op, expr_reg).unwrap();
-        let result = self.alloc_temporary(&expr_type);
-        result.set_from_reg(&mut self.code, &expr_type, Reg::Rax, Reg::Rbx);
-        (expr_type, result)
+        let (ty, val) = self.gen_expr(expr);
+        let reg = self.gen_arith_load(Reg::Rax, &ty, &val);
+        writeln!(self.code, "{} {}", op, reg).unwrap();
+
+        let tmp = self.alloc_temporary(&ty);
+        self.gen_store(type_width(&ty), &tmp, Reg::Rax, Reg::Rbx);
+        (ty, tmp)
     }
 
     fn gen_binary(&mut self, op: &str, lhs: Expr, rhs: Expr) -> (Type, Val) {
@@ -527,9 +533,9 @@ impl Gen {
         writeln!(self.code, "{} {}, {}", op, lhs_reg, rhs_reg).unwrap();
 
         // Save result to temporary
-        let result = self.alloc_temporary(&ty);
-        result.set_from_reg(&mut self.code, &ty, Reg::Rax, Reg::Rbx);
-        (ty, result)
+        let tmp = self.alloc_temporary(&ty);
+        self.gen_store(type_width(&ty), &tmp, Reg::Rax, Reg::Rbx);
+        (ty, tmp)
     }
 
     fn gen_shift(&mut self, op: &str, lhs: Expr, rhs: Expr) -> (Type, Val) {
@@ -543,9 +549,9 @@ impl Gen {
         writeln!(self.code, "{} {}, cl", op, lhs_reg).unwrap();
 
         // Save result to temporary
-        let result = self.alloc_temporary(&lhs_type);
-        result.set_from_reg(&mut self.code, &lhs_type, Reg::Rax, Reg::Rbx);
-        (lhs_type, result)
+        let tmp = self.alloc_temporary(&lhs_type);
+        self.gen_store(type_width(&lhs_type), &tmp, Reg::Rax, Reg::Rbx);
+        (lhs_type, tmp)
     }
 
     fn gen_divmod(&mut self, is_mod: bool, lhs: Expr, rhs: Expr) -> (Type, Val) {
@@ -568,13 +574,13 @@ impl Gen {
         }
 
         // Save result to temporary
-        let result = self.alloc_temporary(&ty);
+        let tmp = self.alloc_temporary(&ty);
         if is_mod { // Remainder in DX
-            result.set_from_reg(&mut self.code, &ty, Reg::Rdx, Reg::Rbx);
-        } else {    // Quotiend in AX
-            result.set_from_reg(&mut self.code, &ty, Reg::Rax, Reg::Rbx);
+            self.gen_store(type_width(&ty), &tmp, Reg::Rdx, Reg::Rbx);
+        } else {    // Quotient in AX
+            self.gen_store(type_width(&ty), &tmp, Reg::Rax, Reg::Rbx);
         }
-        (ty, result)
+        (ty, tmp)
     }
 
     fn gen_expr(&mut self, expr: Expr) -> (Type, Val) {
@@ -599,23 +605,21 @@ impl Gen {
                     elem_count: elem_vals.len(),
                 };
                 // Allocate temporary for the array, and copy the elements into it
-                let dest = self.alloc_temporary(&ty);
+                let tmp = self.alloc_temporary(&ty);
                 for (i, val) in elem_vals.into_iter().enumerate() {
-                    self.gen_copy(dest.with_offset(i * elem_size), val, elem_size);
+                    self.gen_copy(tmp.with_offset(i * elem_size), val, elem_size);
                 }
-                (ty, dest)
+                (ty, tmp)
             },
             // Record literal
             Expr::Record(ty, field_vals) => {
-                let dest = self.alloc_temporary(&ty);
-                for (mut field_ty, off, expr) in field_vals {
+                let tmp = self.alloc_temporary(&ty);
+                for (field_ty1, field_off, expr) in field_vals {
                     let (field_ty2, field_val) = self.gen_expr(expr);
-                    field_ty = Type::do_deduce(field_ty, field_ty2);
-                    field_val.val_to_reg(&mut self.code, &field_ty, Reg::Rax);
-                    dest.with_offset(off).set_from_reg(&mut self.code,
-                        &field_ty, Reg::Rax, Reg::Rbx);
+                    self.gen_copy(tmp.with_offset(field_off), field_val,
+                        Type::do_deduce(field_ty1, field_ty2).get_size());
                 }
-                (ty, dest)
+                (ty, tmp)
             },
             // Reference to symbol
             Expr::Sym(name) => {
@@ -633,11 +637,12 @@ impl Gen {
                 // Save address to rax
                 let (base_type, base_val) = self.gen_expr(*base);
                 base_val.ptr_to_reg(&mut self.code, Reg::Rax);
+                // Create pointer type
+                let ty = Type::Ptr { base_type: Box::new(base_type) };
                 // Save pointer to temporary
-                let ptr_type = Type::Ptr { base_type: Box::new(base_type) };
-                let ptr_val = self.alloc_temporary(&ptr_type);
-                ptr_val.set_from_reg(&mut self.code, &ptr_type, Reg::Rax, Reg::Rbx);
-                (ptr_type, ptr_val)
+                let tmp = self.alloc_temporary(&ty);
+                self.gen_store(type_width(&ty), &tmp, Reg::Rax, Reg::Rbx);
+                (ty, tmp)
             },
             Expr::Deref(ptr) => {
                 let (ptr_type, ptr_val) = self.gen_expr(*ptr);
@@ -693,11 +698,9 @@ impl Gen {
                         elem_type.get_size()).unwrap();
 
                     // Allocate temporary
-                    let ptr_type = Type::Ptr {
-                        base_type: Box::new(elem_type.clone()) };
+                    let ptr_type = Type::Ptr { base_type: Box::new(elem_type.clone()) };
                     let ptr_val = self.alloc_temporary(&ptr_type);
-                    ptr_val.set_from_reg(&mut self.code,
-                            &ptr_type, Reg::Rax, Reg::Rbx);
+                    self.gen_store(type_width(&ptr_type), &ptr_val, Reg::Rax, Reg::Rbx);
                     (elem_type, Val::Deref(Box::new(ptr_val), 0))
                 }
             },
@@ -734,9 +737,9 @@ impl Gen {
                     (rettype, Val::Void)
                 } else {
                     // Move return value to temporary
-                    let ret_val = self.alloc_temporary(&rettype);
-                    ret_val.set_from_reg(&mut self.code, &rettype, Reg::Rax, Reg::Rbx);
-                    (rettype, ret_val)
+                    let tmp = self.alloc_temporary(&rettype);
+                    self.gen_store(type_width(&rettype), &tmp, Reg::Rax, Reg::Rbx);
+                    (rettype, tmp)
                 }
             },
 
@@ -865,24 +868,6 @@ impl Gen {
         }
     }
 
-    fn gen_copy(&mut self, mut dst: Val, mut src: Val, mut size: usize) {
-        while size > 0 {
-            // Find the maximum width we can copy
-            let width = max_width(size);
-
-            // Do the copy
-            self.gen_load(width, Reg::Rax, &src);
-            self.gen_store(width, &dst, Reg::Rax, Reg::Rbx);
-
-            // Adjust for the next step
-            size -= width as usize;
-            if size > 0 {
-                src = src.with_offset(width as usize);
-                dst = dst.with_offset(width as usize);
-            }
-        }
-    }
-
     fn gen_stmt(&mut self, rettype: &Type, stmt: Stmt) {
         match stmt {
             Stmt::Block(stmts) => {
@@ -983,13 +968,15 @@ impl Gen {
         // Generate heading
         writeln!(self.text, "{}:", name).unwrap();
 
-        // Create function scope with parameters
+        // Create function scope
         self.symtab.push_scope();
-        for (i, (name, dtype)) in param_tab.into_iter().enumerate() {
-            let offset = self.stack_alloc(&dtype);
-            Val::Off(offset)
-                .set_from_reg(&mut self.code, &dtype, PARAMS[i], Reg::Rbx);
-            self.symtab.insert(name, Sym::make_local(dtype, offset));
+
+        // Copy the parameters into locals
+        // FIXME: this doesn't take into account most of the SysV ABI
+        for (i, (name, ty)) in param_tab.into_iter().enumerate() {
+            let off = self.stack_alloc(&ty);
+            self.gen_store(type_width(&ty), &Val::Off(off), PARAMS[i], Reg::Rbx);
+            self.symtab.insert(name, Sym::make_local(ty, off));
         }
 
         // Generate statements
