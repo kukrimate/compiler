@@ -120,6 +120,8 @@ impl Type {
 pub enum Expr {
     // Constant value
     Const(Type, usize),
+    // Array literal
+    Array(Vec<Expr>),
     // Record literal
     Record(Type, Vec<(Type, usize, Expr)>),
     // Reference to symbol
@@ -402,36 +404,6 @@ impl Expr {
             expr1 => Expr::LOr(Box::from(expr1), Box::from(expr2)),
         }
     }
-
-    pub fn want_const(&self) -> usize {
-        if let Expr::Const(_, val) = self {
-            *val
-        } else {
-            panic!("Expected constant expression")
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Init {
-    Base(Expr),
-    List(Vec<Init>),
-}
-
-impl Init {
-    pub fn want_expr(self) -> Expr {
-        match self {
-            Init::Base(expr) => expr,
-            _ => panic!("Wanted bare initializer!"),
-        }
-    }
-
-    pub fn want_list(self) -> Vec<Init> {
-        match self {
-            Init::List(list) => list,
-            _ => panic!("Wanted initializer list!"),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -439,7 +411,7 @@ pub enum Stmt {
     Block(Vec<Stmt>),
     Eval(Expr),
     Ret(Option<Expr>),
-    Auto(Rc<str>, Type, Option<Init>),
+    Auto(Rc<str>, Type, Option<Expr>),
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
@@ -544,6 +516,18 @@ impl<'source> Parser<'source> {
         suf
     }
 
+    fn want_array_literal(&mut self) -> Expr {
+        let mut elems = Vec::new();
+        while !maybe_want!(self, Token::RSq) {
+            elems.push(self.want_expr());
+            if !maybe_want!(self, Token::Comma) {
+                want!(self, Token::RSq, "Expected ]");
+                break;
+            }
+        }
+        Expr::Array(elems)
+    }
+
     fn want_record_literal(&mut self, name: Rc<str>) -> Expr {
         // Find record type
         let ty = if let Some(ty) = self.records.get(&name) {
@@ -603,6 +587,8 @@ impl<'source> Parser<'source> {
                 } else {
                     Expr::Sym(val)
                 },
+            Token::LSq
+                => self.want_array_literal(),
             Token::Constant(val)
                 => Expr::Const(self.want_type_suffix(), val),
             Token::True
@@ -889,22 +875,6 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_initializer(&mut self) -> Init {
-        if maybe_want!(self, Token::LCurly) {
-            let mut list = Vec::new();
-            while !maybe_want!(self, Token::RCurly) {
-                list.push(self.want_initializer());
-                if !maybe_want!(self, Token::Comma) {
-                    want!(self, Token::RCurly, "Expected right curly");
-                    break;
-                }
-            }
-            Init::List(list)
-        } else {
-            Init::Base(self.want_expr())
-        }
-    }
-
     fn want_block(&mut self) -> Vec<Stmt> {
         let mut stmts = Vec::new();
         while !maybe_want!(self, Token::RCurly) {
@@ -956,7 +926,7 @@ impl<'source> Parser<'source> {
                 };
                 let mut init = None;
                 if maybe_want!(self, Token::Assign) {
-                    init = Some(self.want_initializer());
+                    init = Some(self.want_expr());
                 }
                 let stmt = Stmt::Auto(ident, dtype, init);
                 want!(self, Token::Semicolon, "Expected ;");
@@ -1002,14 +972,20 @@ impl<'source> Parser<'source> {
                 Token::Static => {
                     let vis = self.maybe_want_vis();
                     let name = self.want_ident();
-                    want!(self, Token::Colon, "Expected :");
-                    let dtype = self.want_type();
+
+                    let dtype = if maybe_want!(self, Token::Colon) {
+                        self.want_type()
+                    } else {
+                        Type::Deduce
+                    };
+
                     if maybe_want!(self, Token::Assign) {
-                        let init = self.want_initializer();
+                        let init = self.want_expr();
                         self.gen.do_static_init(vis, name, dtype, init);
                     } else {
                         self.gen.do_static(vis, name, dtype);
                     }
+
                     want!(self, Token::Semicolon, "Expected ;");
                 },
                 Token::Fn => {

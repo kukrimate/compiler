@@ -4,7 +4,7 @@
 // Code generation
 //
 
-use crate::ast::{Expr,Init,Type,Stmt,Vis};
+use crate::ast::{Expr,Type,Stmt,Vis};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
@@ -143,7 +143,7 @@ fn asm_dataword(dtype: &Type) -> &str {
         Type::U8|Type::I8 => "db",
         Type::U16|Type::I16 => "dw",
         Type::U32|Type::I32 => "dd",
-        Type::U64|Type::I64 => "dq",
+        Type::U64|Type::I64|Type::Ptr{..} => "dq",
         _ => unreachable!(),
     }
 }
@@ -370,54 +370,53 @@ impl Gen {
         name
     }
 
-    fn gen_static_init(&mut self, dtype: &Type, init: Init) {
-        match dtype {
-            Type::U8|Type::I8|Type::U16|Type::I16|Type::U32|Type::I32|Type::U64|Type::I64 => {
-                // Integers can only be initialized by constant expressions
-                writeln!(self.data, "{} {}", asm_dataword(dtype),
-                    init.want_expr().want_const()).unwrap()
+    fn gen_static_init(&mut self, dty: Type, init: Expr) -> Type {
+        match init {
+            Expr::Const(mut ty, val) => {
+                // Deduce real type
+                ty = Type::do_deduce(dty, ty);
+                // Write constant to data section
+                // FIXME: align data
+                writeln!(self.data, "{} {}", asm_dataword(&ty), val).unwrap();
+                ty
             },
-            Type::Ptr {..} => {
-                match init.want_expr() {
-                    // Pointer initialized by a constant expression
-                    Expr::Const(_, val) => writeln!(self.data, "dq {}", val).unwrap(),
-                    // Pointer initialized by the addres of another symbol
-                    Expr::Ref(sym) => {
-                        if let Expr::Sym(name) = *sym {
-                            writeln!(self.data, "dq {}", name).unwrap()
-                        } else {
-                            panic!("Non-constant global initializer")
-                        }
-                    },
-                    _ => panic!("Non-constant global initializer")
+            Expr::Array(elems) => {
+                let elem_cnt = elems.len();
+                let mut elem_ty = Type::Deduce;
+                for elem in elems.into_iter() {
+                    let elem_ty1 = self.gen_static_init(elem_ty.clone(), elem);
+                    elem_ty = Type::do_deduce(elem_ty, elem_ty1);
                 }
+                Type::do_deduce(Type::Array {
+                    elem_count: elem_cnt,
+                    elem_type: Box::new (elem_ty),
+                }, dty)
             },
-            Type::Array { elem_type, elem_count } => {
-                let init_list = init.want_list();
-                let mut elems_left = *elem_count;
-                for elem in init_list {
-                    if elems_left == 0 {
-                        panic!("Too many initializers for array")
-                    }
-                    self.gen_static_init(elem_type, elem);
-                    elems_left -= 1;
+            Expr::Record(ty, fields) => {
+                for (field_ty, _, field_init) in fields {
+                    self.gen_static_init(field_ty, field_init);
                 }
-                if elems_left > 0 {
-                    panic!("Too few initializers for array")
-                }
+                ty
             },
-            _ => todo!(),
+            Expr::Ref(expr) => {
+                if let Expr::Sym(name) = *expr {
+                    writeln!(self.data, "dq {}", name).unwrap();
+                } else {
+                    panic!("Expected constant expression")
+                }
+                dty // FIXME: actually do symbol lookup and deduce pointer type
+            },
+            _ => panic!("Expected constant expression"),
         }
     }
 
-    pub fn do_static_init(&mut self, vis: Vis, name: Rc<str>, dtype: Type, init: Init) {
+    pub fn do_static_init(&mut self, vis: Vis, name: Rc<str>, dtype: Type, init: Expr) {
         // Generate heading
         writeln!(self.data, "{}:", name).unwrap();
         // Generate data
-        // FIXME: align .data entry
-        self.gen_static_init(&dtype, init);
+        let ty = self.gen_static_init(dtype, init);
         // Create symbol
-        self.do_sym(vis, name, dtype);
+        self.do_sym(vis, name, ty);
     }
 
     pub fn do_static(&mut self, vis: Vis, name: Rc<str>, dtype: Type) {
@@ -582,6 +581,30 @@ impl Gen {
         match expr {
             // Constant value
             Expr::Const(dtype, val) => (dtype, Val::Imm(val)),
+            // Array literal
+            Expr::Array(elem_exprs) => {
+                // Deduce element type, and generate value for all elements
+                let mut elem_ty = Type::Deduce;
+                let mut elem_vals = Vec::new();
+                for expr in elem_exprs.into_iter() {
+                    let (ty, val) = self.gen_expr(expr);
+                    elem_ty = Type::do_deduce(elem_ty, ty);
+                    elem_vals.push(val);
+                }
+                // Remember element size
+                let elem_size = elem_ty.get_size();
+                // Create final array type
+                let ty = Type::Array {
+                    elem_type: Box::new(elem_ty),
+                    elem_count: elem_vals.len(),
+                };
+                // Allocate temporary for the array, and copy the elements into it
+                let dest = self.alloc_temporary(&ty);
+                for (i, val) in elem_vals.into_iter().enumerate() {
+                    self.gen_copy(dest.with_offset(i * elem_size), val, elem_size);
+                }
+                (ty, dest)
+            },
             // Record literal
             Expr::Record(ty, field_vals) => {
                 let dest = self.alloc_temporary(&ty);
@@ -860,43 +883,6 @@ impl Gen {
         }
     }
 
-    fn gen_init_expr(&mut self, dest_type: Type, expr: Expr) -> (Type, Val) {
-        let (src_type, src_val) = self.gen_expr(expr);
-        let comp_type = Type::do_deduce(dest_type, src_type);
-        (comp_type, src_val)
-    }
-
-    fn gen_init_list(&mut self, dest_type: Type, dest_val: Val, init: Init) {
-        match dest_type {
-            Type::Bool | Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::U32
-                     | Type::I32 | Type::U64 | Type::I64 | Type::Ptr {..} => {
-                let (ty, src) = self.gen_init_expr(dest_type, init.want_expr());
-                self.gen_copy(dest_val, src, ty.get_size());
-            },
-            Type::Array { elem_type, elem_count } => {
-                let init_list = init.want_list();
-                if init_list.len() != elem_count {
-                    panic!("Array initializer with wrong number of elements");
-                }
-                for (i, elem_init) in init_list.into_iter().enumerate() {
-                    let elem_val = dest_val.with_offset(i * elem_type.get_size());
-                    self.gen_init_list(*elem_type.clone(), elem_val, elem_init);
-                }
-            },
-            Type::Record { fields, .. } => {
-                let init_list = init.want_list();
-                if init_list.len() != fields.len() {
-                    panic!("Record initializer with wrong number of elements");
-                }
-                for ((field_type, field_offset), field_init) in fields.into_iter().zip(init_list) {
-                    let field_val = dest_val.with_offset(*field_offset);
-                    self.gen_init_list(field_type.clone(), field_val, field_init);
-                }
-            },
-            Type::Deduce | Type::Void | Type::Func {..} => unreachable!(),
-        }
-    }
-
     fn gen_stmt(&mut self, rettype: &Type, stmt: Stmt) {
         match stmt {
             Stmt::Block(stmts) => {
@@ -917,27 +903,24 @@ impl Gen {
                 // Then jump to the end of function
                 writeln!(&mut self.code, "jmp .$done").unwrap();
             },
-            Stmt::Auto(name, dtype, opt_init) => {
+            Stmt::Auto(name, dty, opt_init) => {
                 if let Some(init) = opt_init {
-                    if let Type::Deduce = dtype {
-                        // Special case needed as we can't deduce type until the initializer is processed
-                        let (init_type, init_val) = self.gen_init_expr(dtype, init.want_expr());
-                        let offset = self.stack_alloc(&init_type);
-                        self.gen_copy(Val::Off(offset), init_val, init_type.get_size());
-                        self.symtab.insert(name, Sym::make_local(init_type, offset));
-                    } else {
-                        // Here we can just allocate straight away
-                        let offset = self.stack_alloc(&dtype);
-                        self.gen_init_list(dtype.clone(), Val::Off(offset), init);
-                        self.symtab.insert(name, Sym::make_local(dtype, offset));
-                    }
+                    // Generate initializer and deduce type
+                    let (sty, src) = self.gen_expr(init);
+                    let ty = Type::do_deduce(dty, sty);
+                    // Allocate local
+                    let off = self.stack_alloc(&ty);
+                    // Copy initializer to local
+                    self.gen_copy(Val::Off(off), src, ty.get_size());
+
+                    self.symtab.insert(name, Sym::make_local(ty, off));
                 } else {
                     // Otherwise just allocate space
-                    if let Type::Deduce = dtype {
+                    if let Type::Deduce = dty {
                         panic!("Asked for type deduction, but no initializer was provided")
                     }
-                    let offset = self.stack_alloc(&dtype);
-                    self.symtab.insert(name, Sym::make_local(dtype, offset));
+                    let off = self.stack_alloc(&dty);
+                    self.symtab.insert(name, Sym::make_local(dty, off));
                 }
             },
             Stmt::Label(label)
