@@ -45,6 +45,8 @@ pub enum Type {
         elem_count: usize,
     },
     Record {
+        // Name of the record (this must match during type checking)
+        name: Rc<str>,
         // Name lookup table
         lookup: HashMap<Rc<str>, usize>,
         // Field types and offsets (in declaration order)
@@ -829,7 +831,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_record(&mut self) -> Type {
+    fn want_record(&mut self, name: Rc<str>) -> Type {
         let mut lookup = HashMap::new();
         let mut fields = Vec::new();
         let mut max_align = 0;
@@ -866,6 +868,7 @@ impl<'source> Parser<'source> {
         want!(self, Token::Semicolon, "Expected ;");
 
         Type::Record {
+            name: name,
             lookup: lookup,
             fields: fields.into_boxed_slice(),
             align: max_align,
@@ -966,7 +969,7 @@ impl<'source> Parser<'source> {
             match self.next_token() {
                 Token::Record => {
                     let name = self.want_ident();
-                    let record = self.want_record();
+                    let record = self.want_record(name.clone());
                     self.records.insert(name, record);
                 },
                 Token::Static => {
