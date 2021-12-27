@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #![feature(hash_set_entry)]
-#![feature(if_let_guard)]
 
 mod ast;
 mod gen;
