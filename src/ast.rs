@@ -895,7 +895,10 @@ impl<'source> Parser<'source> {
     }
 
     fn want_if(&mut self) -> Stmt {
+        want!(self, Token::LParen, "Expected (");
         let cond = self.want_expr();
+        want!(self, Token::RParen, "Expected )");
+
         want!(self, Token::LCurly, "Expected left curly");
         let then = Box::new(Stmt::Block(self.want_block()));
         let _else = if maybe_want!(self, Token::Else) {
@@ -908,6 +911,16 @@ impl<'source> Parser<'source> {
             None
         };
         Stmt::If(cond, then, _else)
+    }
+
+    fn want_while(&mut self) -> Stmt {
+        want!(self, Token::LParen, "Expected (");
+        let cond = self.want_expr();
+        want!(self, Token::RParen, "Expected )");
+
+        want!(self, Token::LCurly, "Expected left curly");
+        let body = self.want_block();
+        Stmt::While(cond, body)
     }
 
     fn want_stmt(&mut self) -> Stmt {
@@ -959,15 +972,8 @@ impl<'source> Parser<'source> {
                 want!(self, Token::Semicolon, "Expected ;");
                 stmt
             },
-            Token::If => {
-                self.want_if()
-            },
-            Token::While => {
-                let cond = self.want_expr();
-                want!(self, Token::LCurly, "Expected left curly");
-                let body = self.want_block();
-                Stmt::While(cond, body)
-            },
+            Token::If => self.want_if(),
+            Token::While => self.want_while(),
             tok => panic!("Invalid statement: {:?}", tok),
         }
     }

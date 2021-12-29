@@ -19,7 +19,7 @@ fn export main() {
 
     {
         auto i = 0i32;
-        while i < 3 {
+        while (i < 3) {
             eval printf("sarr[%d] = %d\n", i, sarr[i]);
             set i = i + 1;
         }
@@ -36,7 +36,7 @@ fn export main() {
     {
         auto arr = [ 0i32, 1, 2, 3, 4 ];
         auto i = 0i32;
-        while i < 5 {
+        while (i < 5) {
             eval printf("arr[%d] = %d\n", i, arr[i]);
             set i = i + 1;
         }

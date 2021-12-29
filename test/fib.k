@@ -7,7 +7,7 @@ fn print_fib(cnt: i32) {
     auto j = 1i32;
     auto t: i32;
 
-    while cnt > 0 {
+    while (cnt > 0) {
         // Print the required number of fibonacci numbers
         eval printf("%d\n", i);
         set t = j;
@@ -20,7 +20,7 @@ fn print_fib(cnt: i32) {
 }
 
 fn export main(argc: i32, argv: *[*u8; 2]) -> i32 {
-    if argc < 2 {
+    if (argc < 2) {
         eval printf("Usage: fib CNT\n");
         ret 1;
     } else {

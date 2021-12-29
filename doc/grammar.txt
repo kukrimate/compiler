@@ -51,9 +51,9 @@
 
 <block-statement> ::= { {<statement>}* }
 
-<if-statement> ::= if <expression> <block-statement> [else (<if-statement>|<block-statement>)]
+<if-statement> ::= if ( <expression> ) <block-statement> [else (<if-statement>|<block-statement>)]
 
-<while-statement> ::= while <expression> <block-statement>
+<while-statement> ::= while ( <expression> ) <block-statement>
 
 <expression> ::= <lor-expression>
 
