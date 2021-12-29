@@ -203,7 +203,7 @@ pub enum Token {
     #[token(".")]
     Dot,       // .
     #[token("as")]
-    Cast,      // cast operator
+    As,        // cast operator
     #[token("->")]
     Arrow,     // function return type
     #[token("...")]

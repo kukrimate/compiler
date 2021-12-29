@@ -644,117 +644,125 @@ impl<'source> Parser<'source> {
     }
 
     fn want_cast(&mut self) -> Expr {
-        let expr = self.want_unary();
-        if maybe_want!(self, Token::Cast) {
-            expr.make_cast(self.want_type())
-        } else {
-            expr
+        let mut expr = self.want_unary();
+        while maybe_want!(self, Token::As) {
+            expr = expr.make_cast(self.want_type());
         }
+        expr
     }
 
     fn want_mul(&mut self) -> Expr {
-        let expr = self.want_cast();
-        if maybe_want!(self, Token::Mul) {
-            expr.make_mul(self.want_mul())
-        } else if maybe_want!(self, Token::Div) {
-            expr.make_div(self.want_mul())
-        } else if maybe_want!(self, Token::Rem) {
-            expr.make_rem(self.want_mul())
-        } else {
-            expr
+        let mut expr = self.want_cast();
+        loop {
+            if maybe_want!(self, Token::Mul) {
+                expr = expr.make_mul(self.want_cast());
+            } else if maybe_want!(self, Token::Div) {
+                expr = expr.make_div(self.want_cast());
+            } else if maybe_want!(self, Token::Rem) {
+                expr = expr.make_rem(self.want_cast());
+            } else {
+                return expr;
+            }
         }
     }
 
     fn want_add(&mut self) -> Expr {
-        let expr = self.want_mul();
-        if maybe_want!(self, Token::Add) {
-            expr.make_add(self.want_add())
-        } else if maybe_want!(self, Token::Sub) {
-            expr.make_sub(self.want_add())
-        } else {
-            expr
+        let mut expr = self.want_mul();
+        loop {
+            if maybe_want!(self, Token::Add) {
+                expr = expr.make_add(self.want_mul());
+            } else if maybe_want!(self, Token::Sub) {
+                expr = expr.make_sub(self.want_mul());
+            } else {
+                return expr;
+            }
         }
     }
 
     fn want_shift(&mut self) -> Expr {
-        let expr = self.want_add();
-        if maybe_want!(self, Token::Lsh) {
-            expr.make_lsh(self.want_shift())
-        } else if maybe_want!(self, Token::Rsh) {
-            expr.make_rsh(self.want_shift())
-        } else {
-            expr
-        }
-    }
-
-    fn want_rel(&mut self) -> Expr {
-        let expr = self.want_shift();
-        if maybe_want!(self, Token::Lt) {
-            expr.make_lt(self.want_rel())
-        } else if maybe_want!(self, Token::Le) {
-            expr.make_le(self.want_rel())
-        } else if maybe_want!(self, Token::Gt) {
-            expr.make_gt(self.want_rel())
-        } else if maybe_want!(self, Token::Ge) {
-            expr.make_ge(self.want_rel())
-        } else {
-            expr
-        }
-    }
-
-    fn want_eq(&mut self) -> Expr {
-        let expr = self.want_rel();
-        if maybe_want!(self, Token::Eq) {
-            expr.make_eq(self.want_eq())
-        } else if maybe_want!(self, Token::Ne) {
-            expr.make_ne(self.want_eq())
-        } else {
-            expr
+        let mut expr = self.want_add();
+        loop {
+            if maybe_want!(self, Token::Lsh) {
+                expr = expr.make_lsh(self.want_add());
+            } else if maybe_want!(self, Token::Rsh) {
+                expr = expr.make_rsh(self.want_add());
+            } else {
+                return expr;
+            }
         }
     }
 
     fn want_and(&mut self) -> Expr {
-        let expr = self.want_eq();
-        if maybe_want!(self, Token::And) {
-            expr.make_and(self.want_and())
-        } else {
-            expr
+        let mut expr = self.want_shift();
+        loop {
+            if maybe_want!(self, Token::And) {
+                expr = expr.make_and(self.want_shift());
+            } else {
+                return expr;
+            }
         }
     }
 
     fn want_xor(&mut self) -> Expr {
-        let expr = self.want_and();
-        if maybe_want!(self, Token::Xor) {
-            expr.make_xor(self.want_xor())
-        } else {
-            expr
+        let mut expr = self.want_and();
+        loop {
+            if maybe_want!(self, Token::Xor) {
+                expr = expr.make_xor(self.want_and());
+            } else {
+                return expr;
+            }
         }
     }
 
     fn want_or(&mut self) -> Expr {
-        let expr = self.want_xor();
-        if maybe_want!(self, Token::Or) {
-            expr.make_or(self.want_or())
+        let mut expr = self.want_xor();
+        loop {
+            if maybe_want!(self, Token::Or) {
+                expr = expr.make_or(self.want_xor());
+            } else {
+                return expr;
+            }
+        }
+    }
+
+    fn want_cmp(&mut self) -> Expr {
+        let expr = self.want_or();
+        if maybe_want!(self, Token::Lt) {
+            expr.make_lt(self.want_or())
+        } else if maybe_want!(self, Token::Le) {
+            expr.make_le(self.want_or())
+        } else if maybe_want!(self, Token::Gt) {
+            expr.make_gt(self.want_or())
+        } else if maybe_want!(self, Token::Ge) {
+            expr.make_ge(self.want_or())
+        } else if maybe_want!(self, Token::Eq) {
+            expr.make_eq(self.want_or())
+        } else if maybe_want!(self, Token::Ne) {
+            expr.make_ne(self.want_or())
         } else {
             expr
         }
     }
 
     fn want_land(&mut self) -> Expr {
-        let expr = self.want_or();
-        if maybe_want!(self, Token::LAnd) {
-            expr.make_land(self.want_land())
-        } else {
-            expr
+        let mut expr = self.want_cmp();
+        loop {
+            if maybe_want!(self, Token::LAnd) {
+                expr = expr.make_land(self.want_cmp());
+            } else {
+                return expr;
+            }
         }
     }
 
     fn want_lor(&mut self) -> Expr {
-        let expr = self.want_land();
-        if maybe_want!(self, Token::LOr) {
-            expr.make_lor(self.want_lor())
-        } else {
-            expr
+        let mut expr = self.want_land();
+        loop {
+            if maybe_want!(self, Token::LAnd) {
+                expr = expr.make_lor(self.want_land());
+            } else {
+                return expr;
+            }
         }
     }
 

@@ -60,8 +60,16 @@
 <lor-expression> ::= <land-expression>
                    | <lor-expression> || <land-expression>
 
-<land-expression> ::= <or-expression>
-                    | <land-expression> && <or-expression>
+<land-expression> ::= <compare-expression>
+                    | <land-expression> && <compare-expression>
+
+<compare-expression> ::= <or-expression>
+                       | <or-expression> == <or-expression>
+                       | <or-expression> != <or-expression>
+                       | <or-expression> <  <or-expression>
+                       | <or-expression> <= <or-expression>
+                       | <or-expression> >  <or-expression>
+                       | <or-expression> >= <or-expression>
 
 <or-expression> ::= <xor-expression>
                   | <or-expression> | <xor-expression>
@@ -69,18 +77,8 @@
 <xor-expression> ::= <and-expression>
                    | <xor-expression> ^ <and-expression>
 
-<and-expression> ::= <eq-expression>
-                   | <and-expression> & <rel-expression>
-
-<eq-expression> ::= <rel-expression>
-                  | <eq-expression> == <rel-expression>
-                  | <eq-expression> != <rel-expression>
-
-<rel-expression> ::= <shift-expression>
-                   | <rel-expression> <  <shift-expression>
-                   | <rel-expression> <= <shift-expression>
-                   | <rel-expression> >  <shift-expression>
-                   | <rel-expression> >= <shift-expression>
+<and-expression> ::= <shift-expression>
+                   | <and-expression> & <shift-expression>
 
 <shift-expression> ::= <additive-expression>
                      | <shift-expression> << <additive-expression>
