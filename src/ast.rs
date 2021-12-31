@@ -443,18 +443,18 @@ struct Parser<'source> {
 }
 
 macro_rules! want {
-    ($self:expr, $pattern:pat, $err:expr) => {
+    ($self:expr, $want:path) => {
         match $self.tmp {
-            Some($pattern) => $self.tmp = $self.lex.next(),
-            _ => panic!("{}, got {:?}", $err, $self.tmp),
+            Some($want) => $self.tmp = $self.lex.next(),
+            _ => panic!("Expected {:?} got {:?}", $want, $self.tmp),
         }
     }
 }
 
 macro_rules! maybe_want {
-    ($self:expr, $pattern:pat) => {
+    ($self:expr, $want:pat) => {
         match $self.tmp {
-            Some($pattern) => {
+            Some($want) => {
                 $self.tmp = $self.lex.next();
                 true
             },
@@ -523,7 +523,7 @@ impl<'source> Parser<'source> {
         while !maybe_want!(self, Token::RSq) {
             elems.push(self.want_expr());
             if !maybe_want!(self, Token::Comma) {
-                want!(self, Token::RSq, "Expected ]");
+                want!(self, Token::RSq);
                 break;
             }
         }
@@ -551,14 +551,14 @@ impl<'source> Parser<'source> {
             } else {
                 panic!("Unknown field {}", field_name)
             };
-            want!(self, Token::Colon, "Expected :");
+            want!(self, Token::Colon);
             if let None = field_vals[idx] {
                 field_vals[idx] = Some((field_ty, off, self.want_expr()));
             } else {
                 panic!("Duplicate initializer for field {}", field_name);
             }
             if !maybe_want!(self, Token::Comma) {
-                want!(self, Token::RCurly, "Expected }");
+                want!(self, Token::RCurly);
                 break;
             }
         }
@@ -574,7 +574,7 @@ impl<'source> Parser<'source> {
         match self.next_token() {
             Token::LParen => {
                 let expr = self.want_expr();
-                want!(self, Token::RParen, "Missing )");
+                want!(self, Token::RParen);
                 expr
             },
             Token::Str(data) => {
@@ -611,14 +611,14 @@ impl<'source> Parser<'source> {
                 while !maybe_want!(self, Token::RParen) {
                     args.push(self.want_expr());
                     if !maybe_want!(self, Token::Comma) {
-                        want!(self, Token::RParen, "Expected )");
+                        want!(self, Token::RParen);
                         break;
                     }
                 }
                 expr = Expr::Call(Box::from(expr), args);
             } else if maybe_want!(self, Token::LSq) {
                 expr = Expr::Elem(Box::from(expr), Box::from(self.want_expr()));
-                want!(self, Token::RSq, "Expected ]");
+                want!(self, Token::RSq);
             } else {
                 return expr;
             }
@@ -786,9 +786,9 @@ impl<'source> Parser<'source> {
             },
             Token::LSq  => {
                 let elem_type = self.want_type();
-                want!(self, Token::Semicolon, "Expected ;");
+                want!(self, Token::Semicolon);
                 let elem_count_expr = self.want_expr();
-                want!(self, Token::RSq, "Expected ]");
+                want!(self, Token::RSq);
                 Type::Array {
                     elem_type: Box::new(elem_type),
                     elem_count: match elem_count_expr {
@@ -806,18 +806,18 @@ impl<'source> Parser<'source> {
             },
             Token::Fn => {
                 // Read parameter types
-                want!(self, Token::LParen, "Expected (");
+                want!(self, Token::LParen);
                 let mut params = Vec::new();
                 let mut varargs = false;
                 while !maybe_want!(self, Token::RParen) {
                     if maybe_want!(self, Token::Varargs) {
                         varargs = true;
-                        want!(self, Token::LParen, "Expected )");
+                        want!(self, Token::LParen);
                         break;
                     }
                     params.push(self.want_type());
                     if !maybe_want!(self, Token::Comma) {
-                        want!(self, Token::RParen, "Expected )");
+                        want!(self, Token::RParen);
                         break;
                     }
                 }
@@ -845,12 +845,12 @@ impl<'source> Parser<'source> {
         let mut max_align = 0;
         let mut offset = 0;
 
-        want!(self, Token::LCurly, "Expected left curly");
+        want!(self, Token::LCurly);
 
         // Read fields until }
         while !maybe_want!(self, Token::RCurly) {
             lookup.insert(self.want_ident(), fields.len());
-            want!(self, Token::Colon, "Expected :");
+            want!(self, Token::Colon);
 
             let field_type = self.want_type();
             let field_align = field_type.get_align();
@@ -867,13 +867,13 @@ impl<'source> Parser<'source> {
             offset += field_size;
 
             if !maybe_want!(self, Token::Comma) {
-                want!(self, Token::RCurly, "Expected right curly");
+                want!(self, Token::RCurly);
                 break;
             }
         }
 
         // Record type declaration must end in semicolon
-        want!(self, Token::Semicolon, "Expected ;");
+        want!(self, Token::Semicolon);
 
         Type::Record {
             name: name,
@@ -895,11 +895,11 @@ impl<'source> Parser<'source> {
     }
 
     fn want_if(&mut self) -> Stmt {
-        want!(self, Token::LParen, "Expected (");
+        want!(self, Token::LParen);
         let cond = self.want_expr();
-        want!(self, Token::RParen, "Expected )");
+        want!(self, Token::RParen);
 
-        want!(self, Token::LCurly, "Expected left curly");
+        want!(self, Token::LCurly);
         let then = Box::new(Stmt::Block(self.want_block()));
         let _else = if maybe_want!(self, Token::Else) {
             Some(Box::new(match self.next_token() {
@@ -914,11 +914,11 @@ impl<'source> Parser<'source> {
     }
 
     fn want_while(&mut self) -> Stmt {
-        want!(self, Token::LParen, "Expected (");
+        want!(self, Token::LParen);
         let cond = self.want_expr();
-        want!(self, Token::RParen, "Expected )");
+        want!(self, Token::RParen);
 
-        want!(self, Token::LCurly, "Expected left curly");
+        want!(self, Token::LCurly);
         let body = self.want_block();
         Stmt::While(cond, body)
     }
@@ -928,7 +928,7 @@ impl<'source> Parser<'source> {
             Token::LCurly => Stmt::Block(self.want_block()),
             Token::Eval => {
                 let stmt = Stmt::Eval(self.want_expr());
-                want!(self, Token::Semicolon, "Expected ;");
+                want!(self, Token::Semicolon);
                 stmt
             },
             Token::Ret => {
@@ -938,7 +938,7 @@ impl<'source> Parser<'source> {
                 } else {
                     Stmt::Ret(Some(self.want_expr()))
                 };
-                want!(self, Token::Semicolon, "Expected ;");
+                want!(self, Token::Semicolon);
                 stmt
             },
             Token::Auto => {
@@ -953,28 +953,28 @@ impl<'source> Parser<'source> {
                     init = Some(self.want_expr());
                 }
                 let stmt = Stmt::Auto(ident, dtype, init);
-                want!(self, Token::Semicolon, "Expected ;");
+                want!(self, Token::Semicolon);
                 stmt
             },
             Token::Ident(s) => {
-                want!(self, Token::Colon, "Expected :");
+                want!(self, Token::Colon);
                 Stmt::Label(s)
             },
             Token::Set => {
                 let var = self.want_expr();
-                want!(self, Token::Assign, "Expected =");
+                want!(self, Token::Assign);
                 let stmt = Stmt::Set(var, self.want_expr());
-                want!(self, Token::Semicolon, "Expected ;");
+                want!(self, Token::Semicolon);
                 stmt
             },
             Token::Jmp => {
                 let stmt = Stmt::Jmp(self.want_ident());
-                want!(self, Token::Semicolon, "Expected ;");
+                want!(self, Token::Semicolon);
                 stmt
             },
             Token::If => self.want_if(),
             Token::While => self.want_while(),
-            tok => panic!("Invalid statement: {:?}", tok),
+            tok => panic!("Invalid statement {:?}", tok),
         }
     }
 
@@ -1003,7 +1003,7 @@ impl<'source> Parser<'source> {
                         self.gen.do_static(vis, name, dtype);
                     }
 
-                    want!(self, Token::Semicolon, "Expected ;");
+                    want!(self, Token::Semicolon);
                 },
                 Token::Fn => {
                     let vis = self.maybe_want_vis();
@@ -1015,22 +1015,22 @@ impl<'source> Parser<'source> {
                     let mut param_tab = Vec::new();
 
                     // Read parameters
-                    want!(self, Token::LParen, "Expected (");
+                    want!(self, Token::LParen);
                     while !maybe_want!(self, Token::RParen) {
                         // Last parameter can be varargs
                         if maybe_want!(self, Token::Varargs) {
                             varargs = true;
-                            want!(self, Token::RParen, "Expected )");
+                            want!(self, Token::RParen);
                             break;
                         }
                         // Otherwise try reading a normal parameter
                         let param_name = self.want_ident();
-                        want!(self, Token::Colon, "Expected :");
+                        want!(self, Token::Colon);
                         let param_type = self.want_type();
                         params.push(param_type.clone());
                         param_tab.push((param_name, param_type));
                         if !maybe_want!(self, Token::Comma) {
-                            want!(self, Token::RParen, "Expected )");
+                            want!(self, Token::RParen);
                             break;
                         }
                     }
@@ -1051,7 +1051,7 @@ impl<'source> Parser<'source> {
 
                     // Read body (if present)
                     if !maybe_want!(self, Token::Semicolon) {
-                        want!(self, Token::LCurly, "Expected left curly");
+                        want!(self, Token::LCurly);
                         let stmts = self.want_block();
                         // Generate body
                         self.gen.do_func(name, rettype, param_tab, stmts);
