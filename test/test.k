@@ -10,15 +10,15 @@ static sfoo = Foo {
     b: 2,
 };
 
-static sarr = [ 0i32, 1, 2 ];
+static sarr: [i32; 3] = [ 0, 1, 2 ];
 
-fn export main() {
+fn export main() -> i32 {
     // Statics
     eval printf("sfoo.a = %d\n", sfoo.a);
     eval printf("sfoo.b = %d\n", sfoo.b);
 
     {
-        auto i = 0i32;
+        auto i = 0;
         while (i < 3) {
             eval printf("sarr[%d] = %d\n", i, sarr[i]);
             set i = i + 1;
@@ -30,15 +30,18 @@ fn export main() {
         a: 1,
         b: 2,
     };
+
     eval printf("foo.a = %d\n", foo.a);
     eval printf("foo.b = %d\n", foo.b);
 
     {
-        auto arr = [ 0i32, 1, 2, 3, 4 ];
-        auto i = 0i32;
+        auto arr: [i32; 5] = [ 0, 1, 2, 3, 4 ];
+        auto i = 0;
         while (i < 5) {
             eval printf("arr[%d] = %d\n", i, arr[i]);
             set i = i + 1;
         }
     }
+
+    ret 0;
 }

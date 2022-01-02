@@ -18,14 +18,13 @@ macro_rules! round_up {
 }
 
 //
-// Type system
+// Type expression
 //
 
 #[derive(Clone,Debug,PartialEq)]
 pub enum Type {
-    Void,   // Non-existent value
-    Deduce, // Deduce type from context
-    Bool,
+    Var(usize),
+
     U8,
     I8,
     U16,
@@ -34,16 +33,23 @@ pub enum Type {
     I32,
     U64,
     I64,
+    USize,
+
+    Bool,
+
     Ptr {
         // What type does this point to?
         base_type: Box<Type>,
     },
+
     Array {
         // Type of array elements
         elem_type: Box<Type>,
         // Number of array elements
-        elem_count: usize,
+        elem_count: Option<usize>,
     },
+
+    // Product type
     Record {
         // Name of the record (this must match during type checking)
         name: Rc<str>,
@@ -55,6 +61,11 @@ pub enum Type {
         align: usize,
         size: usize,
     },
+
+    // Return type from a procedure
+    Void,
+
+    // Function
     Func {
         params: Box<[Type]>,
         varargs: bool,
@@ -65,17 +76,18 @@ pub enum Type {
 impl Type {
     pub fn get_align(&self) -> usize {
         match self {
-            Type::Bool | Type::U8 | Type::I8 => 1,
+            Type::U8 | Type::I8 | Type::Bool => 1,
             Type::U16 => 2,
             Type::I16 => 2,
             Type::U32 => 4,
             Type::I32 => 4,
             Type::U64 => 8,
             Type::I64 => 8,
+            Type::USize => 8,
             Type::Ptr {..} => 8,
             Type::Array { elem_type, .. } => elem_type.get_align(),
             Type::Record { align, .. } => *align,
-            Type::Void | Type::Deduce | Type::Func {..}
+            Type::Var(_) | Type::Void | Type::Func {..}
                 => unreachable!(),
         }
     }
@@ -89,27 +101,14 @@ impl Type {
             Type::I32 => 4,
             Type::U64 => 8,
             Type::I64 => 8,
+            Type::USize => 8,
             Type::Ptr {..} => 8,
             Type::Array { elem_type, elem_count }
-                => elem_type.get_size() * elem_count,
+                => elem_type.get_size() * elem_count
+                        .expect("Array without element count allocated"),
             Type::Record { size, .. } => *size,
-            Type::Void | Type::Deduce | Type::Func {..}
+            Type::Var(_) | Type::Void | Type::Func {..}
                 => unreachable!(),
-        }
-    }
-
-    pub fn do_deduce(ty1: Type, ty2: Type) -> Type {
-        match (ty1, ty2) {
-            (Type::Deduce, Type::Deduce)
-                => Type::Deduce,
-            (dtype, Type::Deduce) | (Type::Deduce, dtype)
-                => dtype,
-            (ty1, ty2) => {
-                if ty1 != ty2 {
-                    panic!("Incompatible types {:?}, {:?}", ty1, ty2)
-                }
-                ty1
-            }
         }
     }
 }
@@ -119,253 +118,50 @@ impl Type {
 //
 
 #[derive(Clone,Debug)]
-pub enum Expr {
+pub enum ExprKind {
     // Constant value
-    Const(Type, usize),
-    // Array literal
-    Array(Vec<Expr>),
-    // Record literal
-    Record(Type, Vec<(Type, usize, Expr)>),
+    Const(usize),
+    // Array/Record literal
+    Compound(Vec<Expr>),
     // Reference to symbol
     Sym(Rc<str>),
-    // Pointer ref/deref
+    // Postfix expressions
+    Field(Box<Expr>, usize),
+    Call(Box<Expr>, Vec<Expr>),
+    Elem(Box<Expr>, Box<Expr>),
+    // Prefix expressions
     Ref(Box<Expr>),
     Deref(Box<Expr>),
-    // Unary operations
     Not(Box<Expr>),
     LNot(Box<Expr>),
     Neg(Box<Expr>),
-    // Postfix expressions
-    Field(Box<Expr>, Rc<str>),
-    Elem(Box<Expr>, Box<Expr>),
-    Call(Box<Expr>, Vec<Expr>),
-    // Binary operations
+    // Cast expression
+    Cast(Box<Expr>),
+    // Binary expressions
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
     Rem(Box<Expr>, Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
+    Sub(Box<Expr>, Box<Expr>),
     Lsh(Box<Expr>, Box<Expr>),
     Rsh(Box<Expr>, Box<Expr>),
+    And(Box<Expr>, Box<Expr>),
+    Xor(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
     Lt(Box<Expr>, Box<Expr>),
     Le(Box<Expr>, Box<Expr>),
     Gt(Box<Expr>, Box<Expr>),
     Ge(Box<Expr>, Box<Expr>),
     Eq(Box<Expr>, Box<Expr>),
     Ne(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    And(Box<Expr>, Box<Expr>),
-    Xor(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
     LAnd(Box<Expr>, Box<Expr>),
     LOr(Box<Expr>, Box<Expr>),
-    // Cast
-    Cast(Box<Expr>, Type)
 }
 
-//
-// Constructors for expression that might be able to fold
-//
-
-fn us(val: bool) -> usize {
-    if val {
-        1
-    } else {
-        0
-    }
-}
-
-impl Expr {
-    pub fn make_not(self) -> Expr {
-        match self {
-            Expr::Const(dtype, val) => Expr::Const(dtype, !val),
-            expr => Expr::Not(Box::from(expr)),
-        }
-    }
-
-    pub fn make_lnot(self) -> Expr {
-        match self {
-            Expr::Const(_, val) => Expr::Const(Type::Bool, us(val == 0)),
-            expr => Expr::LNot(Box::from(expr)),
-        }
-    }
-
-    pub fn make_neg(self) -> Expr {
-        match self {
-            Expr::Const(dtype, val) => Expr::Const(dtype, !val + 1),
-            expr => Expr::Neg(Box::from(expr)),
-        }
-    }
-
-    pub fn make_cast(self, new_type: Type) -> Expr {
-        match self {
-            Expr::Const(_, val) => Expr::Const(new_type, val),
-            expr => Expr::Cast(Box::from(expr), new_type)
-        }
-    }
-
-    pub fn make_mul(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
-                Expr::Const(Type::do_deduce(ty1, ty2), val1 * val2),
-            (expr1, expr2) => Expr::Mul(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_div(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
-                Expr::Const(Type::do_deduce(ty1, ty2), val1 / val2),
-            (expr1, expr2) => Expr::Div(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_rem(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
-                Expr::Const(Type::do_deduce(ty1, ty2), val1 % val2),
-            (expr1, expr2) => Expr::Rem(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_add(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
-                Expr::Const(Type::do_deduce(ty1, ty2), val1 + val2),
-            (expr1, expr2) => Expr::Add(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_sub(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
-                Expr::Const(Type::do_deduce(ty1, ty2), val1 - val2),
-            (expr1, expr2) => Expr::Sub(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_lsh(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(_, val2)) =>
-                Expr::Const(ty1, val1 << val2),
-            (expr1, expr2) => Expr::Lsh(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_rsh(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(_, val2)) =>
-                Expr::Const(ty1, val1 >> val2),
-            (expr1, expr2) => Expr::Rsh(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_lt(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                let _ = Type::do_deduce(ty1, ty2);
-                Expr::Const(Type::Bool, us(val1 < val2))
-            },
-            (expr1, expr2) => Expr::Lt(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_le(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                let _ = Type::do_deduce(ty1, ty2);
-                Expr::Const(Type::Bool, us(val1 <= val2))
-            },
-            (expr1, expr2) => Expr::Le(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_gt(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                let _ = Type::do_deduce(ty1, ty2);
-                Expr::Const(Type::Bool, us(val1 > val2))
-            },
-            (expr1, expr2) => Expr::Gt(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_ge(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                let _ = Type::do_deduce(ty1, ty2);
-                Expr::Const(Type::Bool, us(val1 >= val2))
-            },
-            (expr1, expr2) => Expr::Ge(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_eq(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                let _ = Type::do_deduce(ty1, ty2);
-                Expr::Const(Type::Bool, us(val1 == val2))
-            },
-            (expr1, expr2) => Expr::Eq(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_ne(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                let _ = Type::do_deduce(ty1, ty2);
-                Expr::Const(Type::Bool, us(val1 != val2))
-            },
-            (expr1, expr2) => Expr::Ne(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_and(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
-                Expr::Const(Type::do_deduce(ty1, ty2), val1 & val2),
-            (expr1, expr2) => Expr::And(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_xor(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
-                Expr::Const(Type::do_deduce(ty1, ty2), val1 ^ val2),
-            (expr1, expr2) => Expr::Xor(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_or(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
-                Expr::Const(Type::do_deduce(ty1, ty2), val1 | val2),
-            (expr1, expr2) => Expr::Or(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_land(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != Type::Bool || ty2 != Type::Bool {
-                    panic!("Expected boolean operands")
-                }
-                Expr::Const(Type::Bool, us(val1 == 0 && val2 == 0))
-            },
-            (expr1, expr2) => Expr::LAnd(Box::from(expr1), Box::from(expr2)),
-        }
-    }
-
-    pub fn make_lor(self, expr2: Expr) -> Expr {
-        match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != Type::Bool || ty2 != Type::Bool {
-                    panic!("Expected boolean operands")
-                }
-                Expr::Const(Type::Bool, us(val1 == 0 || val2 == 0))
-            },
-            (expr1, expr2) => Expr::LOr(Box::from(expr1), Box::from(expr2)),
-        }
-    }
+#[derive(Clone,Debug)]
+pub struct Expr {
+    pub ty: Type,
+    pub kind: ExprKind,
 }
 
 #[derive(Debug)]
@@ -378,7 +174,7 @@ pub enum Stmt {
     Set(Expr, Expr),
     Jmp(Rc<str>),
     If(Expr, Box<Stmt>, Option<Box<Stmt>>),
-    While(Expr, Vec<Stmt>),
+    While(Expr, Box<Stmt>),
 }
 
 #[derive(Debug,PartialEq)]
@@ -386,6 +182,54 @@ pub enum Vis {
     Private,    // Internal definition
     Export,     // Exported definition
     Extern,     // External definition reference
+}
+
+//
+// Chained hash tables used for a symbol table
+//
+
+struct SymTab {
+    list: Vec<HashMap<Rc<str>, Type>>,
+}
+
+impl SymTab {
+    fn new() -> SymTab {
+        let mut cm = SymTab {
+            list: Vec::new(),
+        };
+        cm.list.push(HashMap::new());
+        cm
+    }
+
+    fn insert(&mut self, name: Rc<str>, ty: Type) {
+        if let Some(inner_scope) = self.list.last_mut() {
+            if let Some(_) = inner_scope.insert(name.clone(), ty) {
+                panic!("Re-declaration of {}", name)
+            }
+        } else {
+            unreachable!();
+        }
+    }
+
+    fn lookup(&mut self, name: &Rc<str>) -> &Type {
+        for scope in self.list.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return ty;
+            }
+        }
+        panic!("Unknown identifier {}", name)
+    }
+
+    fn push_scope(&mut self) {
+        self.list.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        if self.list.len() < 2 {
+            unreachable!();
+        }
+        self.list.pop();
+    }
 }
 
 //
@@ -400,6 +244,12 @@ struct Parser<'source> {
     gen: &'source mut Gen,
     // Currently defined record types
     records: HashMap<Rc<str>, Type>,
+    // Symbol table
+    symtab: SymTab,
+    // Type variable index
+    tvar: usize,
+    // Type variable constraints
+    tvarmap: HashMap<usize, Type>,
 }
 
 macro_rules! want {
@@ -430,13 +280,528 @@ impl<'source> Parser<'source> {
             lex: lex,
             gen: gen,
             records: HashMap::new(),
+            symtab: SymTab::new(),
+            tvar: 0,
+            tvarmap: HashMap::new(),
         }
     }
 
+    // Create a new unique type variable
+    fn next_tvar(&mut self) -> Type {
+        let tvar = self.tvar;
+        self.tvar += 1;
+        Type::Var(tvar)
+    }
+
+    // Unify two types
+    fn unify(&mut self, ty1: Type, ty2: Type) -> Type {
+        match (ty1, ty2) {
+            // Recurse: aggregate types are composed of other types
+            // NOTE: records and functions aren't treated as aggregates for now
+            // as those form boundaries for type deduction and must be explictly
+            // annotated
+            (Type::Ptr { base_type: base_ty1 }, Type::Ptr { base_type: base_ty2 })
+                => Type::Ptr {
+                    base_type: Box::new(self.unify(*base_ty1, *base_ty2))
+                },
+            (Type::Array { elem_type: elem_ty1, elem_count: elem_cnt1 },
+             Type::Array { elem_type: elem_ty2, elem_count: elem_cnt2 })
+                => Type::Array {
+                    elem_type: Box::new(self.unify(*elem_ty1, *elem_ty2)),
+                    elem_count:
+                        // Unknown length arrays come from array types created
+                        // when indexing
+                        match (elem_cnt1, elem_cnt2) {
+                            (Some(cnt1), Some(cnt2))
+                                => if cnt1 != cnt2 {
+                                    panic!("Tried to unify arrays with different size")
+                                } else {
+                                    Some(cnt1)
+                                },
+                            (Some(cnt), None) | (None, Some(cnt))
+                                => Some(cnt),
+                            (None, None) => None,
+                        }
+                },
+
+            // Base case type variables
+            (Type::Var(var), newty) | (newty, Type::Var(var)) => {
+                let ty = if let Some(prevty) = self.tvarmap.remove(&var) {
+                    // If there was a previous bound for this variable,
+                    // unify them and insert the unified type
+                    self.unify(prevty, newty)
+                } else {
+                    // If not, insert the new type into the table
+                    newty
+                };
+                self.tvarmap.insert(var, ty.clone());
+                ty
+            },
+
+            // Base case: basic types can be compared directly
+            (ty1, ty2) => {
+                if ty1 != ty2 {
+                    panic!("Incompatible types {:?}, {:?}", ty1, ty2)
+                }
+                ty1
+            }
+        }
+    }
+
+    // Find the literal type for a type expression that might contain type variables
+    // NOTE: only works after all constraints were unified
+    fn lit_type(&mut self, ty: Type) -> Type {
+        match ty {
+            // Recurse: aggregate types are composed of other types
+            // NOTE: records and functions aren't treated as aggregates for now
+            // as those form boundaries for type deduction and must be explictly
+            // annotated
+            Type::Ptr { base_type }
+                => Type::Ptr {
+                    base_type: Box::new(self.lit_type(*base_type))
+                },
+            Type::Array { elem_type, elem_count }
+                => Type::Array {
+                    elem_type: Box::new(self.lit_type(*elem_type)),
+                    elem_count: elem_count
+                },
+
+            // Base case: type variables
+            Type::Var(var)
+                => if let Some(ty) = self.tvarmap.get(&var).cloned() {
+                    self.lit_type(ty)
+                } else {
+                    panic!("Type variable {} not deducible, provide more information", var);
+                },
+
+            // Base case: basic types
+            ty => ty,
+        }
+    }
+
+    //
+    // Expression AST constructors
+    //
+    // These run when a function is first parsed, thus not all types will be
+    // deduced here. Hence these functions should only type check something
+    // where an expression by definition must have its type deducible from
+    // previous context.
+    //
+
+    fn make_const(&mut self, ty: Type, val: usize) -> Expr {
+        Expr {
+            ty: ty,
+            kind: ExprKind::Const(val)
+        }
+    }
+
+    fn make_sym(&mut self, ty: Type, name: Rc<str>) -> Expr {
+        Expr {
+            ty: ty,
+            kind: ExprKind::Sym(name)
+        }
+    }
+
+    fn make_field(&mut self, record: Expr, name: Rc<str>) -> Expr {
+        // Records are type deduction boundaries,
+        // we can finish deducing here and enforce.
+        if let Type::Record { lookup, fields, .. } = self.lit_type(record.ty.clone()) {
+            let (ty, off) = if let Some(idx) = lookup.get(&name) {
+                fields[*idx].clone()
+            } else {
+                panic!("Unknown field {}", name);
+            };
+            Expr {
+                ty: ty,
+                kind: ExprKind::Field(Box::new(record), off)
+            }
+        } else {
+            panic!("Dot operator on non-record type");
+        }
+    }
+
+    fn make_call(&mut self, func: Expr, args: Vec<Expr>) -> Expr {
+        // Function calls are type deduction boundaries,
+        // we can finish deducing here and enforce.
+        if let Type::Func { params, varargs, rettype } = self.lit_type(func.ty.clone()) {
+            // Make sure the number of arguments is correct
+            if args.len() < params.len() {
+                panic!("Too few arguments");
+            }
+            if !varargs && args.len() > params.len() {
+                panic!("Too many arguments");
+            }
+
+            // For each non-varargs argument, unify the argument
+            // expression's type with the function parameter's type.
+            for (param_ty, arg) in params.iter().zip(args.iter()) {
+                self.unify(param_ty.clone(), arg.ty.clone());
+            }
+
+            Expr {
+                ty: *rettype.clone(),
+                kind: ExprKind::Call(Box::new(func), args)
+            }
+        } else {
+            panic!("() operator on non-function type");
+        }
+    }
+
+    fn make_elem(&mut self, array: Expr, index: Expr) -> Expr {
+        // The type we expect is an array of something, create such a type
+        // with a type variable as the element type, and unify it with the
+        // arrray expression's type. This will ensure that we will have a type
+        // as required.
+        let elem_ty = self.next_tvar();
+        self.unify(array.ty.clone(), Type::Array {
+            elem_type: Box::new(elem_ty.clone()),
+            elem_count: None,
+        });
+        self.unify(index.ty.clone(), Type::USize);
+        Expr {
+            ty: elem_ty,
+            kind: ExprKind::Elem(Box::new(array), Box::new(index))
+        }
+    }
+
+
+    fn make_ref(&mut self, expr: Expr) -> Expr {
+        Expr {
+            ty: Type::Ptr { base_type: Box::new(expr.ty.clone()) },
+            kind: ExprKind::Ref(Box::new(expr))
+        }
+    }
+
+    fn make_deref(&mut self, ptr: Expr) -> Expr {
+        // We are doing the same thing here as in make_elem() above
+        let base_ty = self.next_tvar();
+        self.unify(ptr.ty.clone(), Type::Ptr {
+            base_type: Box::new(base_ty.clone())
+        });
+        Expr {
+            ty: base_ty,
+            kind: ExprKind::Deref(Box::new(ptr))
+        }
+    }
+
+    fn make_not(&mut self, expr: Expr) -> Expr {
+        Expr {
+            ty: expr.ty.clone(),
+            kind: ExprKind::Not(Box::new(expr))
+        }
+    }
+
+    fn make_lnot(&mut self, expr: Expr) -> Expr {
+        Expr {
+            ty: expr.ty.clone(),
+            kind: ExprKind::LNot(Box::new(expr))
+        }
+    }
+
+    fn make_neg(&mut self, expr: Expr) -> Expr {
+        Expr {
+            ty: expr.ty.clone(),
+            kind: ExprKind::Neg(Box::new(expr))
+        }
+    }
+
+    fn make_cast(&mut self, expr: Expr, ty: Type) -> Expr {
+        Expr {
+            ty: ty,
+            kind: ExprKind::Cast(Box::new(expr))
+        }
+    }
+
+    fn make_mul(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            kind: ExprKind::Mul(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_div(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            kind: ExprKind::Div(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_rem(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            kind: ExprKind::Rem(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_add(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            kind: ExprKind::Add(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_sub(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            kind: ExprKind::Sub(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_lsh(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: expr.ty.clone(),
+            kind: ExprKind::Lsh(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_rsh(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: expr.ty.clone(),
+            kind: ExprKind::Rsh(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_lt(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        self.unify(expr.ty.clone(), expr2.ty.clone());
+        Expr {
+            ty: Type::Bool,
+            kind: ExprKind::Lt(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_le(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        self.unify(expr.ty.clone(), expr2.ty.clone());
+        Expr {
+            ty: Type::Bool,
+            kind: ExprKind::Le(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_gt(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        self.unify(expr.ty.clone(), expr2.ty.clone());
+        Expr {
+            ty: Type::Bool,
+            kind: ExprKind::Gt(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_ge(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        self.unify(expr.ty.clone(), expr2.ty.clone());
+        Expr {
+            ty: Type::Bool,
+            kind: ExprKind::Ge(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_eq(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        self.unify(expr.ty.clone(), expr2.ty.clone());
+        Expr {
+            ty: Type::Bool,
+            kind: ExprKind::Eq(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_ne(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        self.unify(expr.ty.clone(), expr2.ty.clone());
+        Expr {
+            ty: Type::Bool,
+            kind: ExprKind::Ne(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_and(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            kind: ExprKind::And(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_xor(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            kind: ExprKind::Xor(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_or(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        Expr {
+            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            kind: ExprKind::Or(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_land(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        // Mostly pointless, but we can add a constraint on these being bool
+        // to the deducer. This should not matter for valid code, but for example
+        // this will force un-initialized lets used in this context to be deduced
+        // to be bool.
+        self.unify(Type::Bool, expr.ty.clone());
+        self.unify(Type::Bool, expr2.ty.clone());
+        Expr {
+            ty: Type::Bool,
+            kind: ExprKind::LAnd(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    fn make_lor(&mut self, expr: Expr, expr2: Expr) -> Expr {
+        self.unify(Type::Bool, expr.ty.clone());
+        self.unify(Type::Bool, expr2.ty.clone());
+        Expr {
+            ty: Type::Bool,
+            kind: ExprKind::LOr(Box::new(expr), Box::new(expr2))
+        }
+    }
+
+    //
+    // Finalize the AST before feeding it to the code generator.
+    // Right now this does the following things:
+    //  1. Replace type variables with deduced literal types
+    //  2. Do type checking on expressions that support type deduction
+    //     from later context (everything but field access and function calls)
+    //  3. Fold constant expressions into a single constant AST node
+    //
+
+    fn finalize_expr(&mut self, mut expr: Expr) -> Expr {
+        // Make sure the expression type is in its literal form
+        expr.ty = self.lit_type(expr.ty);
+
+        // The following steps depend on expression kind
+        expr.kind = match expr.kind {
+            kind @ (ExprKind::Const(_) | ExprKind::Sym(_)) => kind,
+            ExprKind::Compound(exprs)
+                => ExprKind::Compound(exprs.into_iter()
+                    .map(|expr| self.finalize_expr(expr)).collect()),
+
+            ExprKind::Field(record, off)
+                => ExprKind::Field(Box::new(self.finalize_expr(*record)), off),
+            ExprKind::Call(func, args)
+                => ExprKind::Call(Box::new(self.finalize_expr(*func)),
+                    args.into_iter().map(|expr| self.finalize_expr(expr)).collect()),
+            ExprKind::Elem(array, index)
+                => ExprKind::Elem(
+                    Box::new(self.finalize_expr(*array)),
+                    Box::new(self.finalize_expr(*index))),
+
+            ExprKind::Ref(inner)
+                => ExprKind::Ref(Box::new(self.finalize_expr(*inner))),
+            ExprKind::Deref(inner)
+                => ExprKind::Deref(Box::new(self.finalize_expr(*inner))),
+            ExprKind::Not(inner)
+                => ExprKind::Not(Box::new(self.finalize_expr(*inner))),
+            ExprKind::LNot(inner)
+                => ExprKind::LNot(Box::new(self.finalize_expr(*inner))),
+            ExprKind::Neg(inner)
+                => ExprKind::Neg(Box::new(self.finalize_expr(*inner))),
+            ExprKind::Cast(inner)
+                => ExprKind::Cast(Box::new(self.finalize_expr(*inner))),
+
+            ExprKind::Mul(lhs, rhs)
+                => ExprKind::Mul(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Div(lhs, rhs)
+                => ExprKind::Div(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Rem(lhs, rhs)
+                => ExprKind::Rem(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Add(lhs, rhs)
+                => ExprKind::Add(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Sub(lhs, rhs)
+                => ExprKind::Sub(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Lsh(lhs, rhs)
+                => ExprKind::Lsh(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Rsh(lhs, rhs)
+                => ExprKind::Rsh(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::And(lhs, rhs)
+                => ExprKind::And(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Xor(lhs, rhs)
+                => ExprKind::Xor(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Or(lhs, rhs)
+                => ExprKind::Or(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Lt(lhs, rhs)
+                => ExprKind::Lt(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Le(lhs, rhs)
+                => ExprKind::Le(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Gt(lhs, rhs)
+                => ExprKind::Gt(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Ge(lhs, rhs)
+                => ExprKind::Ge(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Eq(lhs, rhs)
+                => ExprKind::Eq(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::Ne(lhs, rhs)
+                => ExprKind::Ne(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::LAnd(lhs, rhs)
+                => ExprKind::LAnd(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+            ExprKind::LOr(lhs, rhs)
+                => ExprKind::LOr(Box::new(self.finalize_expr(*lhs)),
+                    Box::new(self.finalize_expr(*rhs))),
+        };
+
+        // Finally return the expression
+        expr
+    }
+
+    fn finalize_stmt(&mut self, stmt: Stmt) -> Stmt {
+        match stmt {
+            Stmt::Block(stmts) =>
+                Stmt::Block(stmts.into_iter()
+                    .map(|stmt| self.finalize_stmt(stmt)).collect()),
+            Stmt::Eval(expr) =>
+                Stmt::Eval(self.finalize_expr(expr)),
+            Stmt::Ret(opt_expr) =>
+                if let Some(expr) = opt_expr {
+                    Stmt::Ret(Some(self.finalize_expr(expr)))
+                } else {
+                    Stmt::Ret(None)
+                },
+            Stmt::Auto(name, mut ty, mut opt_expr) => {
+                // Obtain literal type for declaration
+                ty = self.lit_type(ty);
+                // Finalize initializer if present
+                if let Some(expr) = opt_expr {
+                    opt_expr = Some(self.finalize_expr(expr));
+                }
+                Stmt::Auto(name, ty, opt_expr)
+            },
+            Stmt::Set(dst, src)
+                => Stmt::Set(self.finalize_expr(dst), self.finalize_expr(src)),
+            Stmt::If(mut cond, mut then, mut opt_else) => {
+                cond = self.finalize_expr(cond);
+                then = Box::new(self.finalize_stmt(*then));
+                if let Some(_else) = opt_else {
+                    opt_else = Some(Box::new(self.finalize_stmt(*_else)));
+                }
+                Stmt::If(cond, then, opt_else)
+            },
+            Stmt::While(mut cond, mut body) => {
+                cond = self.finalize_expr(cond);
+                body = Box::new(self.finalize_stmt(*body));
+                Stmt::While(cond, body)
+            },
+            stmt @ (Stmt::Label(_) | Stmt::Jmp(_)) => stmt,
+        }
+    }
+
+    // Read the next token
     fn next_token(&mut self) -> Token {
         std::mem::replace(&mut self.tmp, self.lex.next()).unwrap()
     }
 
+    // Read an identifier
     fn want_ident(&mut self) -> Rc<str> {
         match &self.tmp {
             Some(Token::Ident(_)) => {
@@ -450,6 +815,7 @@ impl<'source> Parser<'source> {
         }
     }
 
+    // Read a visibility (or return Vis::Private)
     fn maybe_want_vis(&mut self) -> Vis {
         if maybe_want!(self, Token::Export) {
             Vis::Export
@@ -460,7 +826,8 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_type_suffix(&mut self) -> Type {
+    // Read an integer type (or return None)
+    fn want_type_suffix(&mut self) -> Option<Type> {
         // Match for type suffix
         let suf = match self.tmp {
             Some(Token::U8)   => Type::U8,
@@ -471,63 +838,94 @@ impl<'source> Parser<'source> {
             Some(Token::I32)  => Type::I32,
             Some(Token::U64)  => Type::U64,
             Some(Token::I64)  => Type::I64,
-            _ => return Type::Deduce,
+            Some(Token::USize)=> Type::USize,
+            _ => return None,
         };
         // Replace temporary token if matched
         self.tmp = self.lex.next();
-        suf
+        Some(suf)
     }
 
     fn want_array_literal(&mut self) -> Expr {
+        let mut elem_ty = self.next_tvar();
         let mut elems = Vec::new();
+
         while !maybe_want!(self, Token::RSq) {
-            elems.push(self.want_expr());
+            let expr = self.want_expr();
+            elem_ty = self.unify(elem_ty, expr.ty.clone());
+            elems.push(expr);
             if !maybe_want!(self, Token::Comma) {
                 want!(self, Token::RSq);
                 break;
             }
         }
-        Expr::Array(elems)
+
+        Expr {
+            ty: Type::Array {
+                elem_type: Box::new(elem_ty),
+                elem_count: Some(elems.len()),
+            },
+            kind: ExprKind::Compound(elems)
+        }
     }
 
-    fn want_record_literal(&mut self, name: Rc<str>) -> Expr {
+    fn want_record_literal(&mut self, tyname: Rc<str>) -> Expr {
         // Find record type
-        let ty = if let Some(ty) = self.records.get(&name) {
+        let ty = if let Some(ty) = self.records.get(&tyname) {
             ty.clone()
         } else {
-            panic!("Unknown record {}", name)
+            panic!("Unknown record {}", tyname)
         };
+
         let (lookup, fields) = if let Type::Record { lookup, fields, .. } = &ty {
             (lookup, fields)
         } else {
             unreachable!()
         };
-        // Read fields
-        let mut field_vals = vec![None; fields.len()];
+
+        // Read expressions
+        let mut expr_map = HashMap::new();
         while !maybe_want!(self, Token::RCurly) {
-            let field_name = self.want_ident();
-            let (idx, field_ty, off) = if let Some(idx) = lookup.get(&field_name) {
-                (*idx, fields[*idx].0.clone(), fields[*idx].1)
-            } else {
-                panic!("Unknown field {}", field_name)
-            };
-            want!(self, Token::Colon);
-            if let None = field_vals[idx] {
-                field_vals[idx] = Some((field_ty, off, self.want_expr()));
-            } else {
-                panic!("Duplicate initializer for field {}", field_name);
+            // Read field name
+            let name = self.want_ident();
+
+            // Check for duplicate field
+            if let Some(_) = expr_map.get(&name) {
+                panic!("Duplicate field {}", name);
             }
+
+            // Read field initializer
+            want!(self, Token::Colon);
+            expr_map.insert(name, self.want_expr());
+
+            // See if we've reached the end
             if !maybe_want!(self, Token::Comma) {
                 want!(self, Token::RCurly);
                 break;
             }
         }
-        // Create record literal
-        Expr::Record(ty, field_vals.into_iter().map(|opt| if let Some(val) = opt {
-            val
-        } else {
-            panic!("Record literal must initialize all fields")
-        }).collect())
+
+        // Map expressions to fields
+        let mut expr_vec = Vec::new();
+        for (name, idx) in lookup {
+            let ty = fields[*idx].0.clone();
+            if let Some(expr) = expr_map.remove(name) {
+                self.unify(ty, expr.ty.clone());
+                expr_vec.push(expr);
+            } else {
+                panic!("Missing field {}", name);
+            }
+        }
+
+        // Make sure there are no expressions left
+        for name in expr_map.keys() {
+            panic!("Unknown field {}", name);
+        }
+
+        Expr {
+            ty: ty,
+            kind: ExprKind::Compound(expr_vec)
+        }
     }
 
     fn want_primary(&mut self) -> Expr {
@@ -538,25 +936,38 @@ impl<'source> Parser<'source> {
                 expr
             },
             Token::Str(data) => {
-                let suffix = self.want_type_suffix();
-                let string_sym = Expr::Sym(self.gen.do_string(suffix, &*data));
+                let chty = self.want_type_suffix().unwrap_or(Type::U8);
+                let (name, ty) = self.gen.do_string(chty.clone(), &*data);
                 // Replace string literal with reference to internal symbol
-                Expr::Ref(Box::from(string_sym))
+                let sym_expr = self.make_sym(ty, name);
+                let mut ref_expr = self.make_ref(sym_expr);
+                // HACK: this reference doesn't actually have an array pointer's
+                // type, because C APIs degrade arrays to pointers to the first
+                // element
+                ref_expr.ty = Type::Ptr { base_type: Box::new(chty) };
+                ref_expr
             },
-            Token::Ident(val)
+            Token::Ident(name)
                 => if maybe_want!(self, Token::LCurly) {
-                    self.want_record_literal(val)
+                    self.want_record_literal(name)
                 } else {
-                    Expr::Sym(val)
+                    let ty = self.symtab.lookup(&name).clone();
+                    self.make_sym(ty, name)
                 },
             Token::LSq
                 => self.want_array_literal(),
-            Token::Constant(val)
-                => Expr::Const(self.want_type_suffix(), val),
+            Token::Constant(val) => {
+                let ty = if let Some(ty) = self.want_type_suffix() {
+                    ty
+                } else {
+                    self.next_tvar()
+                };
+                self.make_const(ty, val)
+            },
             Token::True
-                => Expr::Const(Type::Bool, 1),
+                => self.make_const(Type::Bool, 1),
             Token::False
-                => Expr::Const(Type::Bool, 0),
+                => self.make_const(Type::Bool, 0),
             _ => panic!("Invalid constant value!"),
         }
     }
@@ -565,7 +976,8 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_primary();
         loop {
             if maybe_want!(self, Token::Dot) {
-                expr = Expr::Field(Box::from(expr), self.want_ident());
+                let name = self.want_ident();
+                expr = self.make_field(expr, name);
             } else if maybe_want!(self, Token::LParen) {
                 let mut args = Vec::new();
                 while !maybe_want!(self, Token::RParen) {
@@ -575,9 +987,10 @@ impl<'source> Parser<'source> {
                         break;
                     }
                 }
-                expr = Expr::Call(Box::from(expr), args);
+                expr = self.make_call(expr, args);
             } else if maybe_want!(self, Token::LSq) {
-                expr = Expr::Elem(Box::from(expr), Box::from(self.want_expr()));
+                let index = self.want_expr();
+                expr = self.make_elem(expr, index);
                 want!(self, Token::RSq);
             } else {
                 return expr;
@@ -587,15 +1000,20 @@ impl<'source> Parser<'source> {
 
     fn want_unary(&mut self) -> Expr {
         if maybe_want!(self, Token::Sub) {
-            self.want_unary().make_neg()
+            let expr = self.want_unary();
+            self.make_neg(expr)
         } else if maybe_want!(self, Token::Tilde) {
-            self.want_unary().make_not()
+            let expr = self.want_unary();
+            self.make_not(expr)
         } else if maybe_want!(self, Token::Excl) {
-            self.want_unary().make_lnot()
+            let expr = self.want_unary();
+            self.make_lnot(expr)
         } else if maybe_want!(self, Token::Mul) {
-            Expr::Deref(Box::from(self.want_unary()))
+            let expr = self.want_unary();
+            self.make_deref(expr)
         } else if maybe_want!(self, Token::And) {
-            Expr::Ref(Box::from(self.want_unary()))
+            let expr = self.want_unary();
+            self.make_ref(expr)
         } else if maybe_want!(self, Token::Add) {
             self.want_unary()
         } else {
@@ -606,7 +1024,8 @@ impl<'source> Parser<'source> {
     fn want_cast(&mut self) -> Expr {
         let mut expr = self.want_unary();
         while maybe_want!(self, Token::As) {
-            expr = expr.make_cast(self.want_type());
+            let ty = self.want_type();
+            expr = self.make_cast(expr, ty);
         }
         expr
     }
@@ -615,11 +1034,14 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_cast();
         loop {
             if maybe_want!(self, Token::Mul) {
-                expr = expr.make_mul(self.want_cast());
+                let expr2 = self.want_cast();
+                expr = self.make_mul(expr, expr2);
             } else if maybe_want!(self, Token::Div) {
-                expr = expr.make_div(self.want_cast());
+                let expr2 = self.want_cast();
+                expr = self.make_div(expr, expr2);
             } else if maybe_want!(self, Token::Rem) {
-                expr = expr.make_rem(self.want_cast());
+                let expr2 = self.want_cast();
+                expr = self.make_rem(expr, expr2);
             } else {
                 return expr;
             }
@@ -630,9 +1052,11 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_mul();
         loop {
             if maybe_want!(self, Token::Add) {
-                expr = expr.make_add(self.want_mul());
+                let expr2 = self.want_mul();
+                expr = self.make_add(expr, expr2);
             } else if maybe_want!(self, Token::Sub) {
-                expr = expr.make_sub(self.want_mul());
+                let expr2 = self.want_mul();
+                expr = self.make_sub(expr, expr2);
             } else {
                 return expr;
             }
@@ -643,9 +1067,11 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_add();
         loop {
             if maybe_want!(self, Token::Lsh) {
-                expr = expr.make_lsh(self.want_add());
+                let expr2 = self.want_add();
+                expr = self.make_lsh(expr, expr2);
             } else if maybe_want!(self, Token::Rsh) {
-                expr = expr.make_rsh(self.want_add());
+                let expr2 = self.want_add();
+                expr = self.make_rsh(expr, expr2);
             } else {
                 return expr;
             }
@@ -656,7 +1082,8 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_shift();
         loop {
             if maybe_want!(self, Token::And) {
-                expr = expr.make_and(self.want_shift());
+                let expr2 = self.want_shift();
+                expr = self.make_and(expr, expr2);
             } else {
                 return expr;
             }
@@ -667,7 +1094,8 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_and();
         loop {
             if maybe_want!(self, Token::Xor) {
-                expr = expr.make_xor(self.want_and());
+                let expr2 = self.want_and();
+                expr = self.make_xor(expr, expr2);
             } else {
                 return expr;
             }
@@ -678,7 +1106,8 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_xor();
         loop {
             if maybe_want!(self, Token::Or) {
-                expr = expr.make_or(self.want_xor());
+                let expr2 = self.want_xor();
+                expr = self.make_or(expr, expr2);
             } else {
                 return expr;
             }
@@ -688,17 +1117,23 @@ impl<'source> Parser<'source> {
     fn want_cmp(&mut self) -> Expr {
         let expr = self.want_or();
         if maybe_want!(self, Token::Lt) {
-            expr.make_lt(self.want_or())
+            let expr2 = self.want_or();
+            self.make_lt(expr, expr2)
         } else if maybe_want!(self, Token::Le) {
-            expr.make_le(self.want_or())
+            let expr2 = self.want_or();
+            self.make_le(expr, expr2)
         } else if maybe_want!(self, Token::Gt) {
-            expr.make_gt(self.want_or())
+            let expr2 = self.want_or();
+            self.make_gt(expr, expr2)
         } else if maybe_want!(self, Token::Ge) {
-            expr.make_ge(self.want_or())
+            let expr2 = self.want_or();
+            self.make_ge(expr, expr2)
         } else if maybe_want!(self, Token::Eq) {
-            expr.make_eq(self.want_or())
+            let expr2 = self.want_or();
+            self.make_eq(expr, expr2)
         } else if maybe_want!(self, Token::Ne) {
-            expr.make_ne(self.want_or())
+            let expr2 = self.want_or();
+            self.make_ne(expr, expr2)
         } else {
             expr
         }
@@ -708,7 +1143,8 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_cmp();
         loop {
             if maybe_want!(self, Token::LAnd) {
-                expr = expr.make_land(self.want_cmp());
+                let expr2 = self.want_cmp();
+                expr = self.make_land(expr, expr2);
             } else {
                 return expr;
             }
@@ -719,7 +1155,8 @@ impl<'source> Parser<'source> {
         let mut expr = self.want_land();
         loop {
             if maybe_want!(self, Token::LAnd) {
-                expr = expr.make_lor(self.want_land());
+                let expr2 = self.want_land();
+                expr = self.make_lor(expr, expr2);
             } else {
                 return expr;
             }
@@ -741,27 +1178,31 @@ impl<'source> Parser<'source> {
             Token::I32  => Type::I32,
             Token::U64  => Type::U64,
             Token::I64  => Type::I64,
+            Token::USize=> Type::USize,
             Token::Mul  => Type::Ptr {
                 base_type: Box::new(self.want_type())
             },
             Token::LSq  => {
                 let elem_type = self.want_type();
                 want!(self, Token::Semicolon);
-                let elem_count_expr = self.want_expr();
+                let expr = self.want_expr();
+                self.unify(Type::USize, expr.ty.clone());
+                let elem_count = match self.finalize_expr(expr).kind {
+                    ExprKind::Const(val) => val,
+                    _ => panic!("Array element count must be constnat"),
+                };
                 want!(self, Token::RSq);
+
                 Type::Array {
                     elem_type: Box::new(elem_type),
-                    elem_count: match elem_count_expr {
-                        Expr::Const(_, val) => val,
-                        _ => panic!("Array element count must be constnat"),
-                    }
+                    elem_count: Some(elem_count)
                 }
             },
-            Token::Ident(ref ident) => {
-                if let Some(record) = self.records.get(ident) {
+            Token::Ident(name) => {
+                if let Some(record) = self.records.get(&name) {
                     return record.clone();
                 } else {
-                    panic!("Non-existent type {}", ident)
+                    panic!("Non-existent type {}", name)
                 }
             },
             Token::Fn => {
@@ -846,46 +1287,61 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_block(&mut self) -> Vec<Stmt> {
+    fn want_stmts(&mut self, rettype: &Type) -> Vec<Stmt> {
         let mut stmts = Vec::new();
         while !maybe_want!(self, Token::RCurly) {
-            stmts.push(self.want_stmt());
+            stmts.push(self.want_stmt(rettype));
         }
         stmts
     }
 
-    fn want_if(&mut self) -> Stmt {
+    fn want_block(&mut self, rettype: &Type) -> Stmt {
+        self.symtab.push_scope();
+        let stmts = self.want_stmts(rettype);
+        self.symtab.pop_scope();
+        Stmt::Block(stmts)
+    }
+
+    fn want_if(&mut self, rettype: &Type) -> Stmt {
+        // Read conditional
         want!(self, Token::LParen);
         let cond = self.want_expr();
         want!(self, Token::RParen);
 
+        // Read true branch
         want!(self, Token::LCurly);
-        let then = Box::new(Stmt::Block(self.want_block()));
+        let then = self.want_block(rettype);
+
+        // Read else branch if present
         let _else = if maybe_want!(self, Token::Else) {
             Some(Box::new(match self.next_token() {
-                Token::LCurly => Stmt::Block(self.want_block()),
-                Token::If => self.want_if(),
+                Token::LCurly => self.want_block(rettype),
+                Token::If => self.want_if(rettype),
                 _ => panic!("Expected block or if after else")
             }))
         } else {
             None
         };
-        Stmt::If(cond, then, _else)
+
+        Stmt::If(cond, Box::new(then), _else)
     }
 
-    fn want_while(&mut self) -> Stmt {
+    fn want_while(&mut self, rettype: &Type) -> Stmt {
+        // Read conditional
         want!(self, Token::LParen);
         let cond = self.want_expr();
         want!(self, Token::RParen);
 
+        // Read body
         want!(self, Token::LCurly);
-        let body = self.want_block();
-        Stmt::While(cond, body)
+        let body = self.want_block(rettype);
+
+        Stmt::While(cond, Box::new(body))
     }
 
-    fn want_stmt(&mut self) -> Stmt {
+    fn want_stmt(&mut self, rettype: &Type) -> Stmt {
         match self.next_token() {
-            Token::LCurly => Stmt::Block(self.want_block()),
+            Token::LCurly => self.want_block(rettype),
             Token::Eval => {
                 let stmt = Stmt::Eval(self.want_expr());
                 want!(self, Token::Semicolon);
@@ -896,23 +1352,37 @@ impl<'source> Parser<'source> {
                     // NOTE: return since we already have the semicolon
                     return Stmt::Ret(None)
                 } else {
-                    Stmt::Ret(Some(self.want_expr()))
+                    let expr = self.want_expr();
+                    self.unify(expr.ty.clone(), rettype.clone());
+                    Stmt::Ret(Some(expr))
                 };
                 want!(self, Token::Semicolon);
                 stmt
             },
             Token::Auto => {
-                let ident = self.want_ident();
-                let dtype = if maybe_want!(self, Token::Colon) {
+                let name = self.want_ident();
+
+                // Read type (or create type variable)
+                let mut ty = if maybe_want!(self, Token::Colon) {
                     self.want_type()
                 } else {
-                    Type::Deduce
+                    self.next_tvar()
                 };
-                let mut init = None;
-                if maybe_want!(self, Token::Assign) {
-                    init = Some(self.want_expr());
-                }
-                let stmt = Stmt::Auto(ident, dtype, init);
+
+                // Unify type with initializer type
+                let expr = if maybe_want!(self, Token::Assign) {
+                    let expr = self.want_expr();
+                    ty = self.unify(ty, expr.ty.clone());
+                    Some(expr)
+                } else {
+                    None
+                };
+
+                // Insert symbol
+                self.symtab.insert(name.clone(), ty.clone());
+
+                // Create statement
+                let stmt = Stmt::Auto(name, ty, expr);
                 want!(self, Token::Semicolon);
                 stmt
             },
@@ -921,19 +1391,21 @@ impl<'source> Parser<'source> {
                 Stmt::Label(s)
             },
             Token::Set => {
-                let var = self.want_expr();
+                let dst = self.want_expr();
                 want!(self, Token::Assign);
-                let stmt = Stmt::Set(var, self.want_expr());
+                let src = self.want_expr();
                 want!(self, Token::Semicolon);
-                stmt
+
+                self.unify(dst.ty.clone(), src.ty.clone());
+                Stmt::Set(dst, src)
             },
             Token::Jmp => {
                 let stmt = Stmt::Jmp(self.want_ident());
                 want!(self, Token::Semicolon);
                 stmt
             },
-            Token::If => self.want_if(),
-            Token::While => self.want_while(),
+            Token::If => self.want_if(rettype),
+            Token::While => self.want_while(rettype),
             tok => panic!("Invalid statement {:?}", tok),
         }
     }
@@ -950,17 +1422,22 @@ impl<'source> Parser<'source> {
                     let vis = self.maybe_want_vis();
                     let name = self.want_ident();
 
-                    let dtype = if maybe_want!(self, Token::Colon) {
+                    let mut ty = if maybe_want!(self, Token::Colon) {
                         self.want_type()
                     } else {
-                        Type::Deduce
+                        self.next_tvar()
                     };
 
                     if maybe_want!(self, Token::Assign) {
-                        let init = self.want_expr();
-                        self.gen.do_static_init(vis, name, dtype, init);
+                        let mut expr = self.want_expr();
+                        ty = self.unify(ty, expr.ty.clone());
+                        expr = self.finalize_expr(expr);
+
+                        self.gen.do_static_init(vis, name.clone(), ty.clone(), expr);
+                        self.symtab.insert(name, ty);
                     } else {
-                        self.gen.do_static(vis, name, dtype);
+                        self.gen.do_static(vis, name.clone(), ty.clone());
+                        self.symtab.insert(name, ty);
                     }
 
                     want!(self, Token::Semicolon);
@@ -1003,18 +1480,38 @@ impl<'source> Parser<'source> {
                     };
 
                     // Create symbol for function
-                    self.gen.do_sym(vis, name.clone(), Type::Func {
+                    let ty = Type::Func {
                         params: params.into(),
                         varargs: varargs,
                         rettype: Box::new(rettype.clone()),
-                    });
+                    };
+                    self.symtab.insert(name.clone(), ty.clone());
+                    self.gen.do_sym(vis, name.clone(), ty);
 
                     // Read body (if present)
-                    if !maybe_want!(self, Token::Semicolon) {
-                        want!(self, Token::LCurly);
-                        let stmts = self.want_block();
+                    if maybe_want!(self, Token::LCurly) {
+                        self.symtab.push_scope();
+
+                        // Add paramters to scope
+                        for (name, ty) in &param_tab {
+                            self.symtab.insert(name.clone(), ty.clone());
+                        }
+
+                        // Read body
+                        let mut stmts = self.want_stmts(&rettype);
+
+                        self.symtab.pop_scope();
+
                         // Generate body
+                        println!("AST: {:#?}", stmts);
+                        stmts = stmts.into_iter()
+                            .map(|stmt| self.finalize_stmt(stmt)).collect();
+                        println!("Constraints: {:#?}", self.tvarmap);
+                        println!("Deduced AST: {:#?}", stmts);
+
                         self.gen.do_func(name, rettype, param_tab, stmts);
+                    } else {
+                        want!(self, Token::Semicolon)
                     }
                 },
                 _ => panic!("Expected record, union, static or function!"),

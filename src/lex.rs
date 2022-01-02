@@ -101,6 +101,8 @@ pub enum Token {
     U64,
     #[token("i64")]
     I64,
+    #[token("usize")]
+    USize,
 
     // Boolean constants
     #[token("true")]
