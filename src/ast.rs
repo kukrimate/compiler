@@ -101,7 +101,7 @@ impl Type {
     pub fn do_deduce(ty1: Type, ty2: Type) -> Type {
         match (ty1, ty2) {
             (Type::Deduce, Type::Deduce)
-                => panic!("Cannot deduce type, be more specific"),
+                => Type::Deduce,
             (dtype, Type::Deduce) | (Type::Deduce, dtype)
                 => dtype,
             (ty1, ty2) => {
@@ -205,78 +205,56 @@ impl Expr {
 
     pub fn make_mul(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot multiply constants with different types")
-                }
-                Expr::Const(ty1, val1 * val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
+                Expr::Const(Type::do_deduce(ty1, ty2), val1 * val2),
             (expr1, expr2) => Expr::Mul(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_div(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot divide constants with different types")
-                }
-                Expr::Const(ty1, val1 / val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
+                Expr::Const(Type::do_deduce(ty1, ty2), val1 / val2),
             (expr1, expr2) => Expr::Div(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_rem(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot calculate remainder of constants with different types")
-                }
-                Expr::Const(ty1, val1 % val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
+                Expr::Const(Type::do_deduce(ty1, ty2), val1 % val2),
             (expr1, expr2) => Expr::Rem(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_add(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot add constants with different types")
-                }
-                Expr::Const(ty1, val1 + val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
+                Expr::Const(Type::do_deduce(ty1, ty2), val1 + val2),
             (expr1, expr2) => Expr::Add(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_sub(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot substract constants with different types")
-                }
-                Expr::Const(ty1, val1 - val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
+                Expr::Const(Type::do_deduce(ty1, ty2), val1 - val2),
             (expr1, expr2) => Expr::Sub(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_lsh(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(_, val2)) => {
-                Expr::Const(ty1, val1 << val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(_, val2)) =>
+                Expr::Const(ty1, val1 << val2),
             (expr1, expr2) => Expr::Lsh(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_rsh(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(_, val2)) => {
-                Expr::Const(ty1, val1 >> val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(_, val2)) =>
+                Expr::Const(ty1, val1 >> val2),
             (expr1, expr2) => Expr::Rsh(Box::from(expr1), Box::from(expr2)),
         }
     }
@@ -284,10 +262,8 @@ impl Expr {
     pub fn make_lt(self, expr2: Expr) -> Expr {
         match (self, expr2) {
             (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot compare constants with different types")
-                }
-                Expr::Const(ty1, us(val1 < val2))
+                let _ = Type::do_deduce(ty1, ty2);
+                Expr::Const(Type::Bool, us(val1 < val2))
             },
             (expr1, expr2) => Expr::Lt(Box::from(expr1), Box::from(expr2)),
         }
@@ -296,10 +272,8 @@ impl Expr {
     pub fn make_le(self, expr2: Expr) -> Expr {
         match (self, expr2) {
             (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot compare constants with different types")
-                }
-                Expr::Const(ty1, us(val1 <= val2))
+                let _ = Type::do_deduce(ty1, ty2);
+                Expr::Const(Type::Bool, us(val1 <= val2))
             },
             (expr1, expr2) => Expr::Le(Box::from(expr1), Box::from(expr2)),
         }
@@ -308,10 +282,8 @@ impl Expr {
     pub fn make_gt(self, expr2: Expr) -> Expr {
         match (self, expr2) {
             (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot compare constants with different types")
-                }
-                Expr::Const(ty1, us(val1 > val2))
+                let _ = Type::do_deduce(ty1, ty2);
+                Expr::Const(Type::Bool, us(val1 > val2))
             },
             (expr1, expr2) => Expr::Gt(Box::from(expr1), Box::from(expr2)),
         }
@@ -320,10 +292,8 @@ impl Expr {
     pub fn make_ge(self, expr2: Expr) -> Expr {
         match (self, expr2) {
             (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot compare constants with different types")
-                }
-                Expr::Const(ty1, us(val1 >= val2))
+                let _ = Type::do_deduce(ty1, ty2);
+                Expr::Const(Type::Bool, us(val1 >= val2))
             },
             (expr1, expr2) => Expr::Ge(Box::from(expr1), Box::from(expr2)),
         }
@@ -332,10 +302,8 @@ impl Expr {
     pub fn make_eq(self, expr2: Expr) -> Expr {
         match (self, expr2) {
             (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot compare constants with different types")
-                }
-                Expr::Const(ty1, us(val1 == val2))
+                let _ = Type::do_deduce(ty1, ty2);
+                Expr::Const(Type::Bool, us(val1 == val2))
             },
             (expr1, expr2) => Expr::Eq(Box::from(expr1), Box::from(expr2)),
         }
@@ -344,10 +312,8 @@ impl Expr {
     pub fn make_ne(self, expr2: Expr) -> Expr {
         match (self, expr2) {
             (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot compare constants with different types")
-                }
-                Expr::Const(ty1, us(val1 != val2))
+                let _ = Type::do_deduce(ty1, ty2);
+                Expr::Const(Type::Bool, us(val1 != val2))
             },
             (expr1, expr2) => Expr::Ne(Box::from(expr1), Box::from(expr2)),
         }
@@ -355,43 +321,34 @@ impl Expr {
 
     pub fn make_and(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot bitwise-and constants with different types")
-                }
-                Expr::Const(ty1, val1 & val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
+                Expr::Const(Type::do_deduce(ty1, ty2), val1 & val2),
             (expr1, expr2) => Expr::And(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_xor(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot bitwise-xor constants with different types")
-                }
-                Expr::Const(ty1, val1 ^ val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
+                Expr::Const(Type::do_deduce(ty1, ty2), val1 ^ val2),
             (expr1, expr2) => Expr::Xor(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_or(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
-                if ty1 != ty2 {
-                    panic!("Cannot bitwise-xor constants with different types")
-                }
-                Expr::Const(ty1, val1 | val2)
-            },
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) =>
+                Expr::Const(Type::do_deduce(ty1, ty2), val1 | val2),
             (expr1, expr2) => Expr::Or(Box::from(expr1), Box::from(expr2)),
         }
     }
 
     pub fn make_land(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(_, val1), Expr::Const(_, val2)) => {
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
+                if ty1 != Type::Bool || ty2 != Type::Bool {
+                    panic!("Expected boolean operands")
+                }
                 Expr::Const(Type::Bool, us(val1 == 0 && val2 == 0))
             },
             (expr1, expr2) => Expr::LAnd(Box::from(expr1), Box::from(expr2)),
@@ -400,7 +357,10 @@ impl Expr {
 
     pub fn make_lor(self, expr2: Expr) -> Expr {
         match (self, expr2) {
-            (Expr::Const(_, val1), Expr::Const(_, val2)) => {
+            (Expr::Const(ty1, val1), Expr::Const(ty2, val2)) => {
+                if ty1 != Type::Bool || ty2 != Type::Bool {
+                    panic!("Expected boolean operands")
+                }
                 Expr::Const(Type::Bool, us(val1 == 0 || val2 == 0))
             },
             (expr1, expr2) => Expr::LOr(Box::from(expr1), Box::from(expr2)),
