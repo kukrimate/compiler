@@ -4,14 +4,14 @@
 // Code generation
 //
 
-use crate::ast::{Expr,ExprKind,Type,Stmt,Vis};
+use crate::ast::{Expr,ExprKind,Ty,Stmt,Vis};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
 
-fn is_signed(ty: &Type) -> bool {
+fn is_signed(ty: &Ty) -> bool {
     match ty {
-        Type::I8|Type::I16|Type::I32|Type::I64 => true,
+        Ty::I8|Ty::I16|Ty::I32|Ty::I64 => true,
         _ => false
     }
 }
@@ -35,12 +35,12 @@ fn max_width(size: usize) -> Width {
 }
 
 // Find the register size used for a parameter
-fn type_width(ty: &Type) -> Width {
+fn type_width(ty: &Ty) -> Width {
     match ty {
-        Type::Bool | Type::U8 | Type::I8 => Width::Byte,
-        Type::U16 | Type::I16 => Width::Word,
-        Type::U32 | Type::I32 => Width::DWord,
-        Type::U64 | Type::I64 | Type::USize | Type::Ptr{..} => Width::QWord,
+        Ty::Bool | Ty::U8 | Ty::I8 => Width::Byte,
+        Ty::U16 | Ty::I16 => Width::Word,
+        Ty::U32 | Ty::I32 => Width::DWord,
+        Ty::U64 | Ty::I64 | Ty::USize | Ty::Ptr{..} => Width::QWord,
         _ => unreachable!(),
     }
 }
@@ -90,18 +90,18 @@ fn loc_str(width: Width) -> &'static str {
 }
 
 impl Reg {
-    fn to_str(&self, dtype: &Type) -> &str {
+    fn to_str(&self, dtype: &Ty) -> &str {
         match dtype {
-            Type::Bool|Type::U8|Type::I8
+            Ty::Bool|Ty::U8|Ty::I8
                 => ["al", "bl", "cl", "dl", "sil", "dil", "r8b", "r9b", "r10b",
                     "r11b", "r12b", "r13b", "r14b", "r15b"][*self as usize],
-            Type::U16|Type::I16
+            Ty::U16|Ty::I16
                 => ["ax", "bx", "cx", "dx", "si", "di", "r8w", "r9w", "r10w",
                     "r11w", "r12w", "r13w", "r14w", "r15w"][*self as usize],
-            Type::U32|Type::I32
+            Ty::U32|Ty::I32
                 => ["eax", "ebx", "ecx", "edx", "esi", "edi", "r8d", "r9d", "r10d",
                     "r11d", "r12d", "r13d", "r14d", "r15d"][*self as usize],
-            Type::U64|Type::I64|Type::USize|Type::Ptr{..}
+            Ty::U64|Ty::I64|Ty::USize|Ty::Ptr{..}
                 => ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10",
                     "r11", "r12", "r13", "r14", "r15"][*self as usize],
             _
@@ -147,12 +147,12 @@ fn cond_str(signed: bool, cond: Cond) -> &'static str {
     }
 }
 
-fn asm_dataword(dtype: &Type) -> &str {
+fn asm_dataword(dtype: &Ty) -> &str {
     match dtype {
-        Type::U8|Type::I8 => "db",
-        Type::U16|Type::I16 => "dw",
-        Type::U32|Type::I32 => "dd",
-        Type::U64|Type::I64|Type::Ptr{..} => "dq",
+        Ty::U8|Ty::I8 => "db",
+        Ty::U16|Ty::I16 => "dw",
+        Ty::U32|Ty::I32 => "dd",
+        Ty::U64|Ty::I64|Ty::Ptr{..} => "dq",
         _ => unreachable!(),
     }
 }
@@ -165,19 +165,19 @@ enum SymKind {
 }
 
 struct Sym {
-    dtype: Type,
+    dtype: Ty,
     kind: SymKind,
 }
 
 impl Sym {
-    fn make_global(dtype: Type, vis: Vis) -> Sym {
+    fn make_global(dtype: Ty, vis: Vis) -> Sym {
         Sym {
             dtype: dtype,
             kind: SymKind::Global(vis),
         }
     }
 
-    fn make_local(dtype: Type, offset: usize) -> Sym {
+    fn make_local(dtype: Ty, offset: usize) -> Sym {
         Sym {
             dtype: dtype,
             kind: SymKind::Local(offset),
@@ -248,7 +248,7 @@ enum Val {
 
 impl Val {
     fn ptr_to_reg(&self, text: &mut String, reg: Reg) {
-        let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
+        let void_ptr = Ty::Ptr { base_type: Box::new(Ty::Void) };
         match self {
             Val::Void => panic!("Use of void value"),
             Val::Imm(_) => panic!("Cannot take address of immediate"),
@@ -264,8 +264,8 @@ impl Val {
         }
     }
 
-    fn val_to_reg(&self, text: &mut String, dtype: &Type, reg: Reg) {
-        let void_ptr = Type::Ptr { base_type: Box::new(Type::Void) };
+    fn val_to_reg(&self, text: &mut String, dtype: &Ty, reg: Reg) {
+        let void_ptr = Ty::Ptr { base_type: Box::new(Ty::Void) };
         match self {
             Val::Void => panic!("Use of void value"),
             Val::Imm(val)
@@ -326,11 +326,11 @@ impl Gen {
         }
     }
 
-    pub fn do_sym(&mut self, vis: Vis, name: Rc<str>, dtype: Type) {
+    pub fn do_sym(&mut self, vis: Vis, name: Rc<str>, dtype: Ty) {
         self.symtab.insert(name.clone(), Sym::make_global(dtype, vis))
     }
 
-    pub fn do_string(&mut self, chty: Type, data: &str) -> (Rc<str>, Type) {
+    pub fn do_string(&mut self, chty: Ty, data: &str) -> (Rc<str>, Ty) {
         // Create assembly symbol
         let name: Rc<str> = format!("str${}", self.str_no).into();
         self.str_no += 1;
@@ -341,7 +341,7 @@ impl Gen {
         }
         writeln!(self.rodata, "0").unwrap();
         // Insert symbol
-        let ty = Type::Array {
+        let ty = Ty::Array {
             elem_type: Box::new(chty),
             elem_count: Some(data.len())
         };
@@ -372,7 +372,7 @@ impl Gen {
         }
     }
 
-    pub fn do_static_init(&mut self, vis: Vis, name: Rc<str>, ty: Type, expr: Expr) {
+    pub fn do_static_init(&mut self, vis: Vis, name: Rc<str>, ty: Ty, expr: Expr) {
         // Generate heading
         writeln!(self.data, "{}:", name).unwrap();
         // Generate data
@@ -381,7 +381,7 @@ impl Gen {
         self.do_sym(vis, name, ty);
     }
 
-    pub fn do_static(&mut self, vis: Vis, name: Rc<str>, dtype: Type) {
+    pub fn do_static(&mut self, vis: Vis, name: Rc<str>, dtype: Ty) {
         // Allocate bss entry
         // FIXME: align .bss entry
         writeln!(self.bss, "{} resb {}", name, dtype.get_size()).unwrap();
@@ -389,14 +389,14 @@ impl Gen {
         self.do_sym(vis, name, dtype);
     }
 
-    fn stack_alloc(&mut self, dtype: &Type) -> usize {
+    fn stack_alloc(&mut self, dtype: &Ty) -> usize {
         // FIXME: align allocation
         let offset = self.frame_size;
         self.frame_size += dtype.get_size();
         offset
     }
 
-    fn alloc_temporary(&mut self, dtype: &Type) -> Val {
+    fn alloc_temporary(&mut self, dtype: &Ty) -> Val {
         let offset = self.stack_alloc(dtype);
         Val::Off(offset)
     }
@@ -457,17 +457,17 @@ impl Gen {
     }
 
     // Load an arithmetic value
-    fn gen_arith_load(&mut self, reg: Reg, ty: &Type, val: &Val) -> &'static str {
+    fn gen_arith_load(&mut self, reg: Reg, ty: &Ty, val: &Val) -> &'static str {
         // Which instruction do we need, and what width do we extend to?
         let (insn, dreg, sloc) = match ty {
             // 8-bit/16-bit types extend to 32-bits
-            Type::U8 => ("movzx", reg_str(Width::DWord, reg), loc_str(Width::Byte)),
-            Type::I8 => ("movsx", reg_str(Width::DWord, reg), loc_str(Width::Byte)),
-            Type::U16 => ("movzx", reg_str(Width::DWord, reg), loc_str(Width::Word)),
-            Type::I16 => ("movsx", reg_str(Width::DWord, reg), loc_str(Width::Word)),
+            Ty::U8 => ("movzx", reg_str(Width::DWord, reg), loc_str(Width::Byte)),
+            Ty::I8 => ("movsx", reg_str(Width::DWord, reg), loc_str(Width::Byte)),
+            Ty::U16 => ("movzx", reg_str(Width::DWord, reg), loc_str(Width::Word)),
+            Ty::I16 => ("movsx", reg_str(Width::DWord, reg), loc_str(Width::Word)),
             // 32-bit and 64-bit types don't get extended
-            Type::U32|Type::I32 => ("mov", reg_str(Width::DWord, reg), loc_str(Width::DWord)),
-            Type::U64|Type::I64|Type::USize => ("mov", reg_str(Width::QWord, reg), loc_str(Width::QWord)),
+            Ty::U32|Ty::I32 => ("mov", reg_str(Width::DWord, reg), loc_str(Width::DWord)),
+            Ty::U64|Ty::I64|Ty::USize => ("mov", reg_str(Width::QWord, reg), loc_str(Width::QWord)),
             _ => panic!("Expected arithmetic type"),
         };
         match val {
@@ -487,7 +487,7 @@ impl Gen {
         dreg
     }
 
-    fn gen_unary(&mut self, op: &str, expr: Expr) -> (Type, Val) {
+    fn gen_unary(&mut self, op: &str, expr: Expr) -> (Ty, Val) {
         let (ty, val) = self.gen_expr(expr);
         let reg = self.gen_arith_load(Reg::Rax, &ty, &val);
         writeln!(self.code, "{} {}", op, reg).unwrap();
@@ -497,7 +497,7 @@ impl Gen {
         (ty, tmp)
     }
 
-    fn gen_binary(&mut self, op: &str, lhs: Expr, rhs: Expr) -> (Type, Val) {
+    fn gen_binary(&mut self, op: &str, lhs: Expr, rhs: Expr) -> (Ty, Val) {
         // Evaluate operands
         let (lhs_ty, lhs_val) = self.gen_expr(lhs);
         let (rhs_ty, rhs_val) = self.gen_expr(rhs); // NOTE: two types must be equal
@@ -513,7 +513,7 @@ impl Gen {
         (lhs_ty, tmp)
     }
 
-    fn gen_shift(&mut self, op: &str, lhs: Expr, rhs: Expr) -> (Type, Val) {
+    fn gen_shift(&mut self, op: &str, lhs: Expr, rhs: Expr) -> (Ty, Val) {
         // Evaluate operands
         let (lhs_ty, lhs_val) = self.gen_expr(lhs);
         let (rhs_ty, rhs_val) = self.gen_expr(rhs);
@@ -529,7 +529,7 @@ impl Gen {
         (lhs_ty, tmp)
     }
 
-    fn gen_divmod(&mut self, is_mod: bool, lhs: Expr, rhs: Expr) -> (Type, Val) {
+    fn gen_divmod(&mut self, is_mod: bool, lhs: Expr, rhs: Expr) -> (Ty, Val) {
         // Evaluate operands
         let (lhs_ty, lhs_val) = self.gen_expr(lhs);
         let (rhs_ty, rhs_val) = self.gen_expr(rhs);
@@ -557,7 +557,7 @@ impl Gen {
         (lhs_ty, tmp)
     }
 
-    fn gen_expr(&mut self, expr: Expr) -> (Type, Val) {
+    fn gen_expr(&mut self, expr: Expr) -> (Ty, Val) {
         match expr.kind {
             // Constant value
             ExprKind::Const(val) => (expr.ty.clone(), Val::Imm(val)),
@@ -591,7 +591,7 @@ impl Gen {
                 let (base_type, base_val) = self.gen_expr(*base);
                 base_val.ptr_to_reg(&mut self.code, Reg::Rax);
                 // Create pointer type
-                let ty = Type::Ptr { base_type: Box::new(base_type) };
+                let ty = Ty::Ptr { base_type: Box::new(base_type) };
                 // Save pointer to temporary
                 let tmp = self.alloc_temporary(&ty);
                 self.gen_store(type_width(&ty), &tmp, Reg::Rax, Reg::Rbx);
@@ -599,7 +599,7 @@ impl Gen {
             },
             ExprKind::Deref(ptr) => {
                 let (ptr_type, ptr_val) = self.gen_expr(*ptr);
-                if let Type::Ptr { base_type } = ptr_type {
+                if let Ty::Ptr { base_type } = ptr_type {
                     (*base_type, Val::Deref(Box::new(ptr_val), 0))
                 } else {
                     panic!("De-referenced non-pointer type")
@@ -620,7 +620,7 @@ impl Gen {
             ExprKind::Elem(array, index) => {
                 // Generate array
                 let (array_type, array_val) = self.gen_expr(*array);
-                let elem_type = if let Type::Array { elem_type, .. } = array_type {
+                let elem_type = if let Ty::Array { elem_type, .. } = array_type {
                     *elem_type
                 } else {
                     panic!("Indexed non-array type")
@@ -640,7 +640,7 @@ impl Gen {
                         elem_type.get_size()).unwrap();
 
                     // Allocate temporary
-                    let ptr_type = Type::Ptr { base_type: Box::new(elem_type.clone()) };
+                    let ptr_type = Ty::Ptr { base_type: Box::new(elem_type.clone()) };
                     let ptr_val = self.alloc_temporary(&ptr_type);
                     self.gen_store(type_width(&ptr_type), &ptr_val, Reg::Rax, Reg::Rbx);
                     (elem_type, Val::Deref(Box::new(ptr_val), 0))
@@ -660,7 +660,7 @@ impl Gen {
                 // Move function address to rax
                 func_val.ptr_to_reg(&mut self.code, Reg::Rbx);
                 // Verify type is actually a function
-                let (varargs, rettype) = if let Type::Func
+                let (varargs, rettype) = if let Ty::Func
                         { varargs, rettype, .. } = func_type {
                     (varargs, *rettype)
                 } else {
@@ -674,7 +674,7 @@ impl Gen {
                 }
                 writeln!(&mut self.code, "call rbx").unwrap();
 
-                if let Type::Void = rettype {
+                if let Ty::Void = rettype {
                     // Create unusable value
                     (rettype, Val::Void)
                 } else {
@@ -722,7 +722,7 @@ impl Gen {
                 let lend = self.next_label();
                 self.gen_bool_expr(expr, ltrue, lfalse);
 
-                let ty = Type::Bool;
+                let ty = Ty::Bool;
                 let off = self.stack_alloc(&ty);
 
                 // True case
@@ -895,7 +895,7 @@ impl Gen {
         }
     }
 
-    pub fn do_func(&mut self, name: Rc<str>, _rettype: Type, param_tab: Vec<(Rc<str>, Type)>, stmts: Vec<Stmt>) {
+    pub fn do_func(&mut self, name: Rc<str>, _rettype: Ty, param_tab: Vec<(Rc<str>, Ty)>, stmts: Vec<Stmt>) {
         self.frame_size = 0;
         self.label_no = 0;
         self.code.clear();

@@ -18,11 +18,11 @@ macro_rules! round_up {
 }
 
 //
-// Type expression
+// Ty expression
 //
 
-#[derive(Clone,Debug,PartialEq)]
-pub enum Type {
+#[derive(Clone,Debug)]
+pub enum Ty {
     Var(usize),
 
     U8,
@@ -39,12 +39,12 @@ pub enum Type {
 
     Ptr {
         // What type does this point to?
-        base_type: Box<Type>,
+        base_type: Box<Ty>,
     },
 
     Array {
-        // Type of array elements
-        elem_type: Box<Type>,
+        // Ty of array elements
+        elem_type: Box<Ty>,
         // Number of array elements
         elem_count: Option<usize>,
     },
@@ -56,7 +56,7 @@ pub enum Type {
         // Name lookup table
         lookup: HashMap<Rc<str>, usize>,
         // Field types and offsets (in declaration order)
-        fields: Box<[(Type, usize)]>,
+        fields: Box<[(Ty, usize)]>,
         // Pre-calculated alingment and size
         align: usize,
         size: usize,
@@ -67,47 +67,47 @@ pub enum Type {
 
     // Function
     Func {
-        params: Box<[Type]>,
+        params: Box<[Ty]>,
         varargs: bool,
-        rettype: Box<Type>,
+        rettype: Box<Ty>,
     },
 }
 
-impl Type {
+impl Ty {
     pub fn get_align(&self) -> usize {
         match self {
-            Type::U8 | Type::I8 | Type::Bool => 1,
-            Type::U16 => 2,
-            Type::I16 => 2,
-            Type::U32 => 4,
-            Type::I32 => 4,
-            Type::U64 => 8,
-            Type::I64 => 8,
-            Type::USize => 8,
-            Type::Ptr {..} => 8,
-            Type::Array { elem_type, .. } => elem_type.get_align(),
-            Type::Record { align, .. } => *align,
-            Type::Var(_) | Type::Void | Type::Func {..}
+            Ty::U8 | Ty::I8 | Ty::Bool => 1,
+            Ty::U16 => 2,
+            Ty::I16 => 2,
+            Ty::U32 => 4,
+            Ty::I32 => 4,
+            Ty::U64 => 8,
+            Ty::I64 => 8,
+            Ty::USize => 8,
+            Ty::Ptr {..} => 8,
+            Ty::Array { elem_type, .. } => elem_type.get_align(),
+            Ty::Record { align, .. } => *align,
+            Ty::Var(_) | Ty::Void | Ty::Func {..}
                 => unreachable!(),
         }
     }
 
     pub fn get_size(&self) -> usize {
         match self {
-            Type::Bool | Type::U8 | Type::I8 => 1,
-            Type::U16 => 2,
-            Type::I16 => 2,
-            Type::U32 => 4,
-            Type::I32 => 4,
-            Type::U64 => 8,
-            Type::I64 => 8,
-            Type::USize => 8,
-            Type::Ptr {..} => 8,
-            Type::Array { elem_type, elem_count }
+            Ty::Bool | Ty::U8 | Ty::I8 => 1,
+            Ty::U16 => 2,
+            Ty::I16 => 2,
+            Ty::U32 => 4,
+            Ty::I32 => 4,
+            Ty::U64 => 8,
+            Ty::I64 => 8,
+            Ty::USize => 8,
+            Ty::Ptr {..} => 8,
+            Ty::Array { elem_type, elem_count }
                 => elem_type.get_size() * elem_count
                         .expect("Array without element count allocated"),
-            Type::Record { size, .. } => *size,
-            Type::Var(_) | Type::Void | Type::Func {..}
+            Ty::Record { size, .. } => *size,
+            Ty::Var(_) | Ty::Void | Ty::Func {..}
                 => unreachable!(),
         }
     }
@@ -160,7 +160,7 @@ pub enum ExprKind {
 
 #[derive(Clone,Debug)]
 pub struct Expr {
-    pub ty: Type,
+    pub ty: Ty,
     pub kind: ExprKind,
 }
 
@@ -169,7 +169,7 @@ pub enum Stmt {
     Block(Vec<Stmt>),
     Eval(Expr),
     Ret(Option<Expr>),
-    Auto(Rc<str>, Type, Option<Expr>),
+    Auto(Rc<str>, Ty, Option<Expr>),
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
@@ -189,7 +189,7 @@ pub enum Vis {
 //
 
 struct SymTab {
-    list: Vec<HashMap<Rc<str>, Type>>,
+    list: Vec<HashMap<Rc<str>, Ty>>,
 }
 
 impl SymTab {
@@ -201,7 +201,7 @@ impl SymTab {
         cm
     }
 
-    fn insert(&mut self, name: Rc<str>, ty: Type) {
+    fn insert(&mut self, name: Rc<str>, ty: Ty) {
         if let Some(inner_scope) = self.list.last_mut() {
             if let Some(_) = inner_scope.insert(name.clone(), ty) {
                 panic!("Re-declaration of {}", name)
@@ -211,7 +211,7 @@ impl SymTab {
         }
     }
 
-    fn lookup(&mut self, name: &Rc<str>) -> &Type {
+    fn lookup(&mut self, name: &Rc<str>) -> &Ty {
         for scope in self.list.iter().rev() {
             if let Some(ty) = scope.get(name) {
                 return ty;
@@ -243,13 +243,13 @@ struct Parser<'source> {
     // Code generation backend
     gen: &'source mut Gen,
     // Currently defined record types
-    records: HashMap<Rc<str>, Type>,
+    records: HashMap<Rc<str>, Ty>,
     // Symbol table
     symtab: SymTab,
-    // Type variable index
+    // Ty variable index
     tvar: usize,
-    // Type variable constraints
-    tvarmap: HashMap<usize, Type>,
+    // Ty variable constraints
+    tvarmap: HashMap<usize, Ty>,
 }
 
 macro_rules! want {
@@ -287,31 +287,43 @@ impl<'source> Parser<'source> {
     }
 
     // Create a new unique type variable
-    fn next_tvar(&mut self) -> Type {
+    fn next_tvar(&mut self) -> Ty {
         let tvar = self.tvar;
         self.tvar += 1;
-        Type::Var(tvar)
+        Ty::Var(tvar)
     }
 
     // Unify two types
-    fn unify(&mut self, ty1: Type, ty2: Type) -> Type {
+    fn unify(&mut self, ty1: &Ty, ty2: &Ty) -> Ty {
         match (ty1, ty2) {
-            // Recurse: aggregate types are composed of other types
-            // NOTE: records and functions aren't treated as aggregates for now
-            // as those form boundaries for type deduction and must be explictly
-            // annotated
-            (Type::Ptr { base_type: base_ty1 }, Type::Ptr { base_type: base_ty2 })
-                => Type::Ptr {
-                    base_type: Box::new(self.unify(*base_ty1, *base_ty2))
+            // Type variables
+            (Ty::Var(var), newty) | (newty, Ty::Var(var)) => {
+                let ty = if let Some(prevty) = self.tvarmap.remove(&var) {
+                    // If there was a previous bound for this variable,
+                    // unify them and insert the unified type
+                    self.unify(&prevty, &newty)
+                } else {
+                    // If not, insert the new type into the table
+                    newty.clone()
+                };
+                self.tvarmap.insert(*var, ty.clone());
+                ty
+            },
+
+            // Aggregate types are composed of other types
+            (Ty::Ptr { base_type: base_ty1 }, Ty::Ptr { base_type: base_ty2 })
+                => Ty::Ptr {
+                    base_type: Box::new(self.unify(base_ty1, base_ty2))
                 },
-            (Type::Array { elem_type: elem_ty1, elem_count: elem_cnt1 },
-             Type::Array { elem_type: elem_ty2, elem_count: elem_cnt2 })
-                => Type::Array {
-                    elem_type: Box::new(self.unify(*elem_ty1, *elem_ty2)),
+
+            (Ty::Array { elem_type: elem_ty1, elem_count: cnt1 },
+             Ty::Array { elem_type: elem_ty2, elem_count: cnt2 })
+                => Ty::Array {
+                    elem_type: Box::new(self.unify(elem_ty1, elem_ty2)),
                     elem_count:
                         // Unknown length arrays come from array types created
                         // when indexing
-                        match (elem_cnt1, elem_cnt2) {
+                        match (*cnt1, *cnt2) {
                             (Some(cnt1), Some(cnt2))
                                 => if cnt1 != cnt2 {
                                     panic!("Tried to unify arrays with different size")
@@ -324,54 +336,77 @@ impl<'source> Parser<'source> {
                         }
                 },
 
-            // Base case type variables
-            (Type::Var(var), newty) | (newty, Type::Var(var)) => {
-                let ty = if let Some(prevty) = self.tvarmap.remove(&var) {
-                    // If there was a previous bound for this variable,
-                    // unify them and insert the unified type
-                    self.unify(prevty, newty)
+            (Ty::Record { name: name1, .. }, Ty::Record { name: name2, .. })
+                => if name1 != name2 {
+                    panic!("Incompatible types {:?}, {:?}", ty1, ty2);
                 } else {
-                    // If not, insert the new type into the table
-                    newty
-                };
-                self.tvarmap.insert(var, ty.clone());
-                ty
-            },
-
-            // Base case: basic types can be compared directly
-            (ty1, ty2) => {
-                if ty1 != ty2 {
-                    panic!("Incompatible types {:?}, {:?}", ty1, ty2)
+                    ty1.clone()
                 }
-                ty1
-            }
+
+            (Ty::Func { params: params1, varargs: varargs1, rettype: rettype1 },
+             Ty::Func { params: params2, varargs: varargs2, rettype: rettype2 })
+                => {
+                    // Make sure the varargs designators match
+                    if varargs1 != varargs2 {
+                        panic!("Tried to unify varargs function with a non-varargs one");
+                    }
+
+                    // Unify parameters and return type
+                    Ty::Func {
+                        params: params1.iter()
+                                        .zip(params2.iter())
+                                        .map(|(p1,p2)| self.unify(p1, p2))
+                                        .collect(),
+                        varargs: *varargs1,
+                        rettype: Box::new(self.unify(rettype1, rettype2))
+                    }
+                }
+
+            // Base case: basic types
+            (Ty::U8, Ty::U8) => Ty::U8,
+            (Ty::I8, Ty::I8) => Ty::I8,
+            (Ty::U16, Ty::U16) => Ty::U16,
+            (Ty::I16, Ty::I16) => Ty::I16,
+            (Ty::U32, Ty::U32) => Ty::U32,
+            (Ty::I32, Ty::I32) => Ty::I32,
+            (Ty::U64, Ty::U64) => Ty::U64,
+            (Ty::I64, Ty::I64) => Ty::I64,
+            (Ty::USize, Ty::USize) => Ty::USize,
+            (Ty::Bool, Ty::Bool) => Ty::Bool,
+            (Ty::Void, Ty::Void) => Ty::Void,
+
+            // Base case: incompatible types
+            (ty1, ty2)
+                => panic!("Incompatible types {:?}, {:?}", ty1, ty2),
         }
     }
 
     // Find the literal type for a type expression that might contain type variables
     // NOTE: only works after all constraints were unified
-    fn lit_type(&mut self, ty: Type) -> Type {
+    fn lit_type(&mut self, ty: Ty) -> Ty {
         match ty {
             // Recurse: aggregate types are composed of other types
             // NOTE: records and functions aren't treated as aggregates for now
             // as those form boundaries for type deduction and must be explictly
             // annotated
-            Type::Ptr { base_type }
-                => Type::Ptr {
+            Ty::Ptr { base_type }
+                => Ty::Ptr {
                     base_type: Box::new(self.lit_type(*base_type))
                 },
-            Type::Array { elem_type, elem_count }
-                => Type::Array {
+            Ty::Array { elem_type, elem_count }
+                => Ty::Array {
                     elem_type: Box::new(self.lit_type(*elem_type)),
                     elem_count: elem_count
                 },
 
             // Base case: type variables
-            Type::Var(var)
-                => if let Some(ty) = self.tvarmap.get(&var).cloned() {
-                    self.lit_type(ty)
+            Ty::Var(var)
+                => if let Some(ty) = self.tvarmap.remove(&var) {
+                    let ty = self.lit_type(ty);
+                    self.tvarmap.insert(var, ty.clone());
+                    ty
                 } else {
-                    panic!("Type variable {} not deducible, provide more information", var);
+                    panic!("Ty variable {} not deducible, provide more information", var);
                 },
 
             // Base case: basic types
@@ -388,14 +423,14 @@ impl<'source> Parser<'source> {
     // previous context.
     //
 
-    fn make_const(&mut self, ty: Type, val: usize) -> Expr {
+    fn make_const(&mut self, ty: Ty, val: usize) -> Expr {
         Expr {
             ty: ty,
             kind: ExprKind::Const(val)
         }
     }
 
-    fn make_sym(&mut self, ty: Type, name: Rc<str>) -> Expr {
+    fn make_sym(&mut self, ty: Ty, name: Rc<str>) -> Expr {
         Expr {
             ty: ty,
             kind: ExprKind::Sym(name)
@@ -405,7 +440,7 @@ impl<'source> Parser<'source> {
     fn make_field(&mut self, record: Expr, name: Rc<str>) -> Expr {
         // Records are type deduction boundaries,
         // we can finish deducing here and enforce.
-        if let Type::Record { lookup, fields, .. } = self.lit_type(record.ty.clone()) {
+        if let Ty::Record { lookup, fields, .. } = self.lit_type(record.ty.clone()) {
             let (ty, off) = if let Some(idx) = lookup.get(&name) {
                 fields[*idx].clone()
             } else {
@@ -423,7 +458,7 @@ impl<'source> Parser<'source> {
     fn make_call(&mut self, func: Expr, args: Vec<Expr>) -> Expr {
         // Function calls are type deduction boundaries,
         // we can finish deducing here and enforce.
-        if let Type::Func { params, varargs, rettype } = self.lit_type(func.ty.clone()) {
+        if let Ty::Func { params, varargs, rettype } = self.lit_type(func.ty.clone()) {
             // Make sure the number of arguments is correct
             if args.len() < params.len() {
                 panic!("Too few arguments");
@@ -435,7 +470,7 @@ impl<'source> Parser<'source> {
             // For each non-varargs argument, unify the argument
             // expression's type with the function parameter's type.
             for (param_ty, arg) in params.iter().zip(args.iter()) {
-                self.unify(param_ty.clone(), arg.ty.clone());
+                self.unify(&param_ty, &arg.ty);
             }
 
             Expr {
@@ -453,11 +488,11 @@ impl<'source> Parser<'source> {
         // arrray expression's type. This will ensure that we will have a type
         // as required.
         let elem_ty = self.next_tvar();
-        self.unify(array.ty.clone(), Type::Array {
+        self.unify(&array.ty, &Ty::Array {
             elem_type: Box::new(elem_ty.clone()),
             elem_count: None,
         });
-        self.unify(index.ty.clone(), Type::USize);
+        self.unify(&index.ty, &Ty::USize);
         Expr {
             ty: elem_ty,
             kind: ExprKind::Elem(Box::new(array), Box::new(index))
@@ -467,7 +502,7 @@ impl<'source> Parser<'source> {
 
     fn make_ref(&mut self, expr: Expr) -> Expr {
         Expr {
-            ty: Type::Ptr { base_type: Box::new(expr.ty.clone()) },
+            ty: Ty::Ptr { base_type: Box::new(expr.ty.clone()) },
             kind: ExprKind::Ref(Box::new(expr))
         }
     }
@@ -475,7 +510,7 @@ impl<'source> Parser<'source> {
     fn make_deref(&mut self, ptr: Expr) -> Expr {
         // We are doing the same thing here as in make_elem() above
         let base_ty = self.next_tvar();
-        self.unify(ptr.ty.clone(), Type::Ptr {
+        self.unify(&ptr.ty, &Ty::Ptr {
             base_type: Box::new(base_ty.clone())
         });
         Expr {
@@ -505,7 +540,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn make_cast(&mut self, expr: Expr, ty: Type) -> Expr {
+    fn make_cast(&mut self, expr: Expr, ty: Ty) -> Expr {
         Expr {
             ty: ty,
             kind: ExprKind::Cast(Box::new(expr))
@@ -514,35 +549,35 @@ impl<'source> Parser<'source> {
 
     fn make_mul(&mut self, expr: Expr, expr2: Expr) -> Expr {
         Expr {
-            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            ty: self.unify(&expr.ty, &expr2.ty),
             kind: ExprKind::Mul(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_div(&mut self, expr: Expr, expr2: Expr) -> Expr {
         Expr {
-            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            ty: self.unify(&expr.ty, &expr2.ty),
             kind: ExprKind::Div(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_rem(&mut self, expr: Expr, expr2: Expr) -> Expr {
         Expr {
-            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            ty: self.unify(&expr.ty, &expr2.ty),
             kind: ExprKind::Rem(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_add(&mut self, expr: Expr, expr2: Expr) -> Expr {
         Expr {
-            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            ty: self.unify(&expr.ty, &expr2.ty),
             kind: ExprKind::Add(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_sub(&mut self, expr: Expr, expr2: Expr) -> Expr {
         Expr {
-            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            ty: self.unify(&expr.ty, &expr2.ty),
             kind: ExprKind::Sub(Box::new(expr), Box::new(expr2))
         }
     }
@@ -562,70 +597,70 @@ impl<'source> Parser<'source> {
     }
 
     fn make_lt(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(expr.ty.clone(), expr2.ty.clone());
+        self.unify(&expr.ty, &expr2.ty);
         Expr {
-            ty: Type::Bool,
+            ty: Ty::Bool,
             kind: ExprKind::Lt(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_le(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(expr.ty.clone(), expr2.ty.clone());
+        self.unify(&expr.ty, &expr2.ty);
         Expr {
-            ty: Type::Bool,
+            ty: Ty::Bool,
             kind: ExprKind::Le(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_gt(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(expr.ty.clone(), expr2.ty.clone());
+        self.unify(&expr.ty, &expr2.ty);
         Expr {
-            ty: Type::Bool,
+            ty: Ty::Bool,
             kind: ExprKind::Gt(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_ge(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(expr.ty.clone(), expr2.ty.clone());
+        self.unify(&expr.ty, &expr2.ty);
         Expr {
-            ty: Type::Bool,
+            ty: Ty::Bool,
             kind: ExprKind::Ge(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_eq(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(expr.ty.clone(), expr2.ty.clone());
+        self.unify(&expr.ty, &expr2.ty);
         Expr {
-            ty: Type::Bool,
+            ty: Ty::Bool,
             kind: ExprKind::Eq(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_ne(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(expr.ty.clone(), expr2.ty.clone());
+        self.unify(&expr.ty, &expr2.ty);
         Expr {
-            ty: Type::Bool,
+            ty: Ty::Bool,
             kind: ExprKind::Ne(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_and(&mut self, expr: Expr, expr2: Expr) -> Expr {
         Expr {
-            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            ty: self.unify(&expr.ty, &expr2.ty),
             kind: ExprKind::And(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_xor(&mut self, expr: Expr, expr2: Expr) -> Expr {
         Expr {
-            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            ty: self.unify(&expr.ty, &expr2.ty),
             kind: ExprKind::Xor(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_or(&mut self, expr: Expr, expr2: Expr) -> Expr {
         Expr {
-            ty: self.unify(expr.ty.clone(), expr2.ty.clone()),
+            ty: self.unify(&expr.ty, &expr2.ty),
             kind: ExprKind::Or(Box::new(expr), Box::new(expr2))
         }
     }
@@ -635,19 +670,19 @@ impl<'source> Parser<'source> {
         // to the deducer. This should not matter for valid code, but for example
         // this will force un-initialized lets used in this context to be deduced
         // to be bool.
-        self.unify(Type::Bool, expr.ty.clone());
-        self.unify(Type::Bool, expr2.ty.clone());
+        self.unify(&expr.ty, &Ty::Bool);
+        self.unify(&expr2.ty, &Ty::Bool);
         Expr {
-            ty: Type::Bool,
+            ty: Ty::Bool,
             kind: ExprKind::LAnd(Box::new(expr), Box::new(expr2))
         }
     }
 
     fn make_lor(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(Type::Bool, expr.ty.clone());
-        self.unify(Type::Bool, expr2.ty.clone());
+        self.unify(&expr.ty, &Ty::Bool);
+        self.unify(&expr2.ty, &Ty::Bool);
         Expr {
-            ty: Type::Bool,
+            ty: Ty::Bool,
             kind: ExprKind::LOr(Box::new(expr), Box::new(expr2))
         }
     }
@@ -827,18 +862,18 @@ impl<'source> Parser<'source> {
     }
 
     // Read an integer type (or return None)
-    fn want_type_suffix(&mut self) -> Option<Type> {
+    fn want_type_suffix(&mut self) -> Option<Ty> {
         // Match for type suffix
         let suf = match self.tmp {
-            Some(Token::U8)   => Type::U8,
-            Some(Token::I8)   => Type::I8,
-            Some(Token::U16)  => Type::U16,
-            Some(Token::I16)  => Type::I16,
-            Some(Token::U32)  => Type::U32,
-            Some(Token::I32)  => Type::I32,
-            Some(Token::U64)  => Type::U64,
-            Some(Token::I64)  => Type::I64,
-            Some(Token::USize)=> Type::USize,
+            Some(Token::U8)   => Ty::U8,
+            Some(Token::I8)   => Ty::I8,
+            Some(Token::U16)  => Ty::U16,
+            Some(Token::I16)  => Ty::I16,
+            Some(Token::U32)  => Ty::U32,
+            Some(Token::I32)  => Ty::I32,
+            Some(Token::U64)  => Ty::U64,
+            Some(Token::I64)  => Ty::I64,
+            Some(Token::USize)=> Ty::USize,
             _ => return None,
         };
         // Replace temporary token if matched
@@ -852,7 +887,7 @@ impl<'source> Parser<'source> {
 
         while !maybe_want!(self, Token::RSq) {
             let expr = self.want_expr();
-            elem_ty = self.unify(elem_ty, expr.ty.clone());
+            elem_ty = self.unify(&elem_ty, &expr.ty);
             elems.push(expr);
             if !maybe_want!(self, Token::Comma) {
                 want!(self, Token::RSq);
@@ -861,7 +896,7 @@ impl<'source> Parser<'source> {
         }
 
         Expr {
-            ty: Type::Array {
+            ty: Ty::Array {
                 elem_type: Box::new(elem_ty),
                 elem_count: Some(elems.len()),
             },
@@ -877,7 +912,7 @@ impl<'source> Parser<'source> {
             panic!("Unknown record {}", tyname)
         };
 
-        let (lookup, fields) = if let Type::Record { lookup, fields, .. } = &ty {
+        let (lookup, fields) = if let Ty::Record { lookup, fields, .. } = &ty {
             (lookup, fields)
         } else {
             unreachable!()
@@ -910,7 +945,7 @@ impl<'source> Parser<'source> {
         for (name, idx) in lookup {
             let ty = fields[*idx].0.clone();
             if let Some(expr) = expr_map.remove(name) {
-                self.unify(ty, expr.ty.clone());
+                self.unify(&ty, &expr.ty);
                 expr_vec.push(expr);
             } else {
                 panic!("Missing field {}", name);
@@ -936,7 +971,7 @@ impl<'source> Parser<'source> {
                 expr
             },
             Token::Str(data) => {
-                let chty = self.want_type_suffix().unwrap_or(Type::U8);
+                let chty = self.want_type_suffix().unwrap_or(Ty::U8);
                 let (name, ty) = self.gen.do_string(chty.clone(), &*data);
                 // Replace string literal with reference to internal symbol
                 let sym_expr = self.make_sym(ty, name);
@@ -944,7 +979,7 @@ impl<'source> Parser<'source> {
                 // HACK: this reference doesn't actually have an array pointer's
                 // type, because C APIs degrade arrays to pointers to the first
                 // element
-                ref_expr.ty = Type::Ptr { base_type: Box::new(chty) };
+                ref_expr.ty = Ty::Ptr { base_type: Box::new(chty) };
                 ref_expr
             },
             Token::Ident(name)
@@ -965,9 +1000,9 @@ impl<'source> Parser<'source> {
                 self.make_const(ty, val)
             },
             Token::True
-                => self.make_const(Type::Bool, 1),
+                => self.make_const(Ty::Bool, 1),
             Token::False
-                => self.make_const(Type::Bool, 0),
+                => self.make_const(Ty::Bool, 0),
             _ => panic!("Invalid constant value!"),
         }
     }
@@ -1167,33 +1202,33 @@ impl<'source> Parser<'source> {
         self.want_lor()
     }
 
-    fn want_type(&mut self) -> Type {
+    fn want_type(&mut self) -> Ty {
         match self.next_token() {
-            Token::Bool => Type::Bool,
-            Token::U8   => Type::U8,
-            Token::I8   => Type::I8,
-            Token::U16  => Type::U16,
-            Token::I16  => Type::I16,
-            Token::U32  => Type::U32,
-            Token::I32  => Type::I32,
-            Token::U64  => Type::U64,
-            Token::I64  => Type::I64,
-            Token::USize=> Type::USize,
-            Token::Mul  => Type::Ptr {
+            Token::Bool => Ty::Bool,
+            Token::U8   => Ty::U8,
+            Token::I8   => Ty::I8,
+            Token::U16  => Ty::U16,
+            Token::I16  => Ty::I16,
+            Token::U32  => Ty::U32,
+            Token::I32  => Ty::I32,
+            Token::U64  => Ty::U64,
+            Token::I64  => Ty::I64,
+            Token::USize=> Ty::USize,
+            Token::Mul  => Ty::Ptr {
                 base_type: Box::new(self.want_type())
             },
             Token::LSq  => {
                 let elem_type = self.want_type();
                 want!(self, Token::Semicolon);
                 let expr = self.want_expr();
-                self.unify(Type::USize, expr.ty.clone());
+                self.unify(&expr.ty, &Ty::USize);
                 let elem_count = match self.finalize_expr(expr).kind {
                     ExprKind::Const(val) => val,
                     _ => panic!("Array element count must be constnat"),
                 };
                 want!(self, Token::RSq);
 
-                Type::Array {
+                Ty::Array {
                     elem_type: Box::new(elem_type),
                     elem_count: Some(elem_count)
                 }
@@ -1227,10 +1262,10 @@ impl<'source> Parser<'source> {
                 let rettype = if maybe_want!(self, Token::Arrow) {
                     self.want_type()
                 } else {
-                    Type::Void
+                    Ty::Void
                 };
 
-                Type::Func {
+                Ty::Func {
                     params: params.into(),
                     varargs: varargs,
                     rettype: Box::new(rettype)
@@ -1240,7 +1275,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_record(&mut self, name: Rc<str>) -> Type {
+    fn want_record(&mut self, name: Rc<str>) -> Ty {
         let mut lookup = HashMap::new();
         let mut fields = Vec::new();
         let mut max_align = 0;
@@ -1276,7 +1311,7 @@ impl<'source> Parser<'source> {
         // Record type declaration must end in semicolon
         want!(self, Token::Semicolon);
 
-        Type::Record {
+        Ty::Record {
             name: name,
             lookup: lookup,
             fields: fields.into_boxed_slice(),
@@ -1287,7 +1322,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn want_stmts(&mut self, rettype: &Type) -> Vec<Stmt> {
+    fn want_stmts(&mut self, rettype: &Ty) -> Vec<Stmt> {
         let mut stmts = Vec::new();
         while !maybe_want!(self, Token::RCurly) {
             stmts.push(self.want_stmt(rettype));
@@ -1295,14 +1330,14 @@ impl<'source> Parser<'source> {
         stmts
     }
 
-    fn want_block(&mut self, rettype: &Type) -> Stmt {
+    fn want_block(&mut self, rettype: &Ty) -> Stmt {
         self.symtab.push_scope();
         let stmts = self.want_stmts(rettype);
         self.symtab.pop_scope();
         Stmt::Block(stmts)
     }
 
-    fn want_if(&mut self, rettype: &Type) -> Stmt {
+    fn want_if(&mut self, rettype: &Ty) -> Stmt {
         // Read conditional
         want!(self, Token::LParen);
         let cond = self.want_expr();
@@ -1326,7 +1361,7 @@ impl<'source> Parser<'source> {
         Stmt::If(cond, Box::new(then), _else)
     }
 
-    fn want_while(&mut self, rettype: &Type) -> Stmt {
+    fn want_while(&mut self, rettype: &Ty) -> Stmt {
         // Read conditional
         want!(self, Token::LParen);
         let cond = self.want_expr();
@@ -1339,7 +1374,7 @@ impl<'source> Parser<'source> {
         Stmt::While(cond, Box::new(body))
     }
 
-    fn want_stmt(&mut self, rettype: &Type) -> Stmt {
+    fn want_stmt(&mut self, rettype: &Ty) -> Stmt {
         match self.next_token() {
             Token::LCurly => self.want_block(rettype),
             Token::Eval => {
@@ -1353,7 +1388,7 @@ impl<'source> Parser<'source> {
                     return Stmt::Ret(None)
                 } else {
                     let expr = self.want_expr();
-                    self.unify(expr.ty.clone(), rettype.clone());
+                    self.unify(&expr.ty, rettype);
                     Stmt::Ret(Some(expr))
                 };
                 want!(self, Token::Semicolon);
@@ -1372,7 +1407,7 @@ impl<'source> Parser<'source> {
                 // Unify type with initializer type
                 let expr = if maybe_want!(self, Token::Assign) {
                     let expr = self.want_expr();
-                    ty = self.unify(ty, expr.ty.clone());
+                    ty = self.unify(&ty, &expr.ty);
                     Some(expr)
                 } else {
                     None
@@ -1396,7 +1431,7 @@ impl<'source> Parser<'source> {
                 let src = self.want_expr();
                 want!(self, Token::Semicolon);
 
-                self.unify(dst.ty.clone(), src.ty.clone());
+                self.unify(&dst.ty, &src.ty);
                 Stmt::Set(dst, src)
             },
             Token::Jmp => {
@@ -1430,7 +1465,7 @@ impl<'source> Parser<'source> {
 
                     if maybe_want!(self, Token::Assign) {
                         let mut expr = self.want_expr();
-                        ty = self.unify(ty, expr.ty.clone());
+                        ty = self.unify(&ty, &expr.ty);
                         expr = self.finalize_expr(expr);
 
                         self.gen.do_static_init(vis, name.clone(), ty.clone(), expr);
@@ -1476,11 +1511,11 @@ impl<'source> Parser<'source> {
                     let rettype = if maybe_want!(self, Token::Arrow) {
                         self.want_type()
                     } else {
-                        Type::Void
+                        Ty::Void
                     };
 
                     // Create symbol for function
-                    let ty = Type::Func {
+                    let ty = Ty::Func {
                         params: params.into(),
                         varargs: varargs,
                         rettype: Box::new(rettype.clone()),
@@ -1504,9 +1539,9 @@ impl<'source> Parser<'source> {
 
                         // Generate body
                         println!("AST: {:#?}", stmts);
+                        println!("Constraints: {:#?}", self.tvarmap);
                         stmts = stmts.into_iter()
                             .map(|stmt| self.finalize_stmt(stmt)).collect();
-                        println!("Constraints: {:#?}", self.tvarmap);
                         println!("Deduced AST: {:#?}", stmts);
 
                         self.gen.do_func(name, rettype, param_tab, stmts);
