@@ -5,19 +5,7 @@
 //
 
 use logos;
-use std::collections::HashSet;
 use std::rc::Rc;
-
-static mut SYMTAB: Option<HashSet<Rc<str>>> = None;
-
-fn symtab_put(s: &str) -> Rc<str> {
-    unsafe {
-        if let None = SYMTAB {
-            SYMTAB = Some(HashSet::new());
-        }
-        SYMTAB.as_mut().unwrap().get_or_insert(s.into()).clone()
-    }
-}
 
 // Exposed lexer type
 pub type Lexer<'source> = logos::Lexer<'source, Token>;
@@ -77,7 +65,11 @@ fn ch(lex: &mut Lexer) -> usize {
 fn str(lex: &mut Lexer) -> Rc<str> {
     // FIXME: parse escape sequences
     let s = String::from(lex.slice()).replace(r"\n", "\n");
-    symtab_put(&s[1..s.len() - 1])
+    s[1..s.len() - 1].into()
+}
+
+fn ident(lex: &mut Lexer) -> Rc<str> {
+    lex.slice().into()
 }
 
 #[derive(logos::Logos, Debug)]
@@ -138,7 +130,7 @@ pub enum Token {
     Str(Rc<str>),
 
     // Indentifiers
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| symtab_put(lex.slice()))]
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", ident)]
     Ident(Rc<str>),
 
     // Symbols
