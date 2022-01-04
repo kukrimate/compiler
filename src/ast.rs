@@ -8,7 +8,9 @@
 
 use crate::lex::{Lexer,Token};
 use crate::gen::Gen;
+use crate::gen::Val;
 use std::collections::HashMap;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 macro_rules! round_up {
@@ -124,7 +126,8 @@ pub enum ExprKind {
     // Array/Record literal
     Compound(Vec<Expr>),
     // Reference to symbol
-    Sym(Rc<str>),
+    Global(Rc<str>),
+    Local(Rc<Local>),
     // Postfix expressions
     Field(Box<Expr>, usize),
     Call(Box<Expr>, Vec<Expr>),
@@ -164,12 +167,35 @@ pub struct Expr {
     pub kind: ExprKind,
 }
 
+impl Expr {
+    fn make_const(ty: Ty, val: usize) -> Expr {
+        Expr {
+            ty: ty,
+            kind: ExprKind::Const(val)
+        }
+    }
+
+    fn make_global(ty: Ty, name: Rc<str>) -> Expr {
+        Expr {
+            ty: ty,
+            kind: ExprKind::Global(name),
+        }
+    }
+
+    fn make_local(ty: Ty, local: Rc<Local>) -> Expr {
+        Expr {
+            ty: ty,
+            kind: ExprKind::Local(local),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Stmt {
     Block(Vec<Stmt>),
     Eval(Expr),
     Ret(Option<Expr>),
-    Auto(Rc<str>, Ty, Option<Expr>),
+    Auto(Ty, Rc<Local>, Option<Expr>),
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
@@ -188,8 +214,52 @@ pub enum Vis {
 // Chained hash tables used for a symbol table
 //
 
+pub type Local = RefCell<Vec<Val>>;
+
+fn make_local() -> Rc<Local> {
+    Rc::new(RefCell::new(Vec::new()))
+}
+
+pub fn add_val(local: &Local, val: Val) {
+    local.borrow_mut().push(val);
+}
+
+pub fn get_val(local: &Local) -> Val {
+    local.borrow()[0].clone()
+}
+
+#[derive(Debug)]
+pub enum SymKind {
+    Global,
+    Local(Rc<Local>),
+}
+
+#[derive(Debug)]
+pub struct Sym {
+    // For every symbol
+    pub ty: Ty,
+    // Kind specific fields
+    pub kind: SymKind
+}
+
+impl Sym {
+    fn make_global(ty: Ty) -> Sym {
+        Sym {
+            ty: ty,
+            kind: SymKind::Global
+        }
+    }
+
+    fn make_local(ty: Ty, local: Rc<Local>) -> Sym {
+        Sym {
+            ty: ty,
+            kind: SymKind::Local(local)
+        }
+    }
+}
+
 struct SymTab {
-    list: Vec<HashMap<Rc<str>, Ty>>,
+    list: Vec<HashMap<Rc<str>, Sym>>,
 }
 
 impl SymTab {
@@ -201,17 +271,16 @@ impl SymTab {
         cm
     }
 
-    fn insert(&mut self, name: Rc<str>, ty: Ty) {
-        if let Some(inner_scope) = self.list.last_mut() {
-            if let Some(_) = inner_scope.insert(name.clone(), ty) {
-                panic!("Re-declaration of {}", name)
-            }
+    fn insert(&mut self, name: Rc<str>, sym: Sym) {
+        let scope = self.list.last_mut().unwrap();
+        if let None = scope.get(&name) {
+            scope.insert(name, sym);
         } else {
-            unreachable!();
+            panic!("Re-declaration of {}", name)
         }
     }
 
-    fn lookup(&mut self, name: &Rc<str>) -> &Ty {
+    fn lookup(&mut self, name: &Rc<str>) -> &Sym {
         for scope in self.list.iter().rev() {
             if let Some(ty) = scope.get(name) {
                 return ty;
@@ -422,20 +491,6 @@ impl<'source> Parser<'source> {
     // where an expression by definition must have its type deducible from
     // previous context.
     //
-
-    fn make_const(&mut self, ty: Ty, val: usize) -> Expr {
-        Expr {
-            ty: ty,
-            kind: ExprKind::Const(val)
-        }
-    }
-
-    fn make_sym(&mut self, ty: Ty, name: Rc<str>) -> Expr {
-        Expr {
-            ty: ty,
-            kind: ExprKind::Sym(name)
-        }
-    }
 
     fn make_field(&mut self, record: Expr, name: Rc<str>) -> Expr {
         // Records are type deduction boundaries,
@@ -702,7 +757,7 @@ impl<'source> Parser<'source> {
 
         // The following steps depend on expression kind
         expr.kind = match expr.kind {
-            kind @ (ExprKind::Const(_) | ExprKind::Sym(_)) => kind,
+            kind @ (ExprKind::Const(_) | ExprKind::Global(_) | ExprKind::Local(_)) => kind,
             ExprKind::Compound(exprs)
                 => ExprKind::Compound(exprs.into_iter()
                     .map(|expr| self.finalize_expr(expr)).collect()),
@@ -803,14 +858,15 @@ impl<'source> Parser<'source> {
                 } else {
                     Stmt::Ret(None)
                 },
-            Stmt::Auto(name, mut ty, mut opt_expr) => {
+            Stmt::Auto(mut ty, local, mut opt_expr) => {
                 // Obtain literal type for declaration
                 ty = self.lit_type(ty);
+
                 // Finalize initializer if present
                 if let Some(expr) = opt_expr {
                     opt_expr = Some(self.finalize_expr(expr));
                 }
-                Stmt::Auto(name, ty, opt_expr)
+                Stmt::Auto(ty, local, opt_expr)
             },
             Stmt::Set(dst, src)
                 => Stmt::Set(self.finalize_expr(dst), self.finalize_expr(src)),
@@ -974,7 +1030,7 @@ impl<'source> Parser<'source> {
                 let chty = self.want_type_suffix().unwrap_or(Ty::U8);
                 let (name, ty) = self.gen.do_string(chty.clone(), &*data);
                 // Replace string literal with reference to internal symbol
-                let sym_expr = self.make_sym(ty, name);
+                let sym_expr = Expr::make_global(ty, name);
                 let mut ref_expr = self.make_ref(sym_expr);
                 // HACK: this reference doesn't actually have an array pointer's
                 // type, because C APIs degrade arrays to pointers to the first
@@ -986,8 +1042,11 @@ impl<'source> Parser<'source> {
                 => if maybe_want!(self, Token::LCurly) {
                     self.want_record_literal(name)
                 } else {
-                    let ty = self.symtab.lookup(&name).clone();
-                    self.make_sym(ty, name)
+                    let sym = self.symtab.lookup(&name);
+                    match &sym.kind {
+                        SymKind::Global => Expr::make_global(sym.ty.clone(), name.clone()),
+                        SymKind::Local(local) => Expr::make_local(sym.ty.clone(), local.clone()),
+                    }
                 },
             Token::LSq
                 => self.want_array_literal(),
@@ -997,12 +1056,10 @@ impl<'source> Parser<'source> {
                 } else {
                     self.next_tvar()
                 };
-                self.make_const(ty, val)
+                Expr::make_const(ty, val)
             },
-            Token::True
-                => self.make_const(Ty::Bool, 1),
-            Token::False
-                => self.make_const(Ty::Bool, 0),
+            Token::True => Expr::make_const(Ty::Bool, 1),
+            Token::False => Expr::make_const(Ty::Bool, 0),
             _ => panic!("Invalid constant value!"),
         }
     }
@@ -1405,7 +1462,7 @@ impl<'source> Parser<'source> {
                 };
 
                 // Unify type with initializer type
-                let expr = if maybe_want!(self, Token::Assign) {
+                let opt_expr = if maybe_want!(self, Token::Assign) {
                     let expr = self.want_expr();
                     ty = self.unify(&ty, &expr.ty);
                     Some(expr)
@@ -1414,10 +1471,11 @@ impl<'source> Parser<'source> {
                 };
 
                 // Insert symbol
-                self.symtab.insert(name.clone(), ty.clone());
+                let local = make_local();
+                self.symtab.insert(name, Sym::make_local(ty.clone(), local.clone()));
 
                 // Create statement
-                let stmt = Stmt::Auto(name, ty, expr);
+                let stmt = Stmt::Auto(ty, local, opt_expr);
                 want!(self, Token::Semicolon);
                 stmt
             },
@@ -1456,6 +1514,8 @@ impl<'source> Parser<'source> {
                 Token::Static => {
                     let vis = self.maybe_want_vis();
                     let name = self.want_ident();
+                    // Link symbol as requested
+                    self.gen.do_link(name.clone(), vis);
 
                     let mut ty = if maybe_want!(self, Token::Colon) {
                         self.want_type()
@@ -1464,27 +1524,33 @@ impl<'source> Parser<'source> {
                     };
 
                     if maybe_want!(self, Token::Assign) {
+                        // Unify initializer type with symbol type
                         let mut expr = self.want_expr();
                         ty = self.unify(&ty, &expr.ty);
                         expr = self.finalize_expr(expr);
 
-                        self.gen.do_static_init(vis, name.clone(), ty.clone(), expr);
-                        self.symtab.insert(name, ty);
+                        // Create data
+                        self.gen.do_data(&name, &expr);
                     } else {
-                        self.gen.do_static(vis, name.clone(), ty.clone());
-                        self.symtab.insert(name, ty);
+                        // Reserve bss space
+                        self.gen.do_bss(&name, &ty);
                     }
+
+                    // Add symbol
+                    self.symtab.insert(name, Sym::make_global(ty));
 
                     want!(self, Token::Semicolon);
                 },
                 Token::Fn => {
                     let vis = self.maybe_want_vis();
                     let name = self.want_ident();
+                    // Link symbol as requested
+                    self.gen.do_link(name.clone(), vis);
 
                     let mut params = Vec::new();
                     let mut varargs = false;
 
-                    let mut param_tab = Vec::new();
+                    let mut param_name_ty = Vec::new();
 
                     // Read parameters
                     want!(self, Token::LParen);
@@ -1496,11 +1562,11 @@ impl<'source> Parser<'source> {
                             break;
                         }
                         // Otherwise try reading a normal parameter
-                        let param_name = self.want_ident();
+                        let name = self.want_ident();
                         want!(self, Token::Colon);
-                        let param_type = self.want_type();
-                        params.push(param_type.clone());
-                        param_tab.push((param_name, param_type));
+                        let ty = self.want_type();
+                        params.push(ty.clone());
+                        param_name_ty.push((name, ty));
                         if !maybe_want!(self, Token::Comma) {
                             want!(self, Token::RParen);
                             break;
@@ -1520,16 +1586,18 @@ impl<'source> Parser<'source> {
                         varargs: varargs,
                         rettype: Box::new(rettype.clone()),
                     };
-                    self.symtab.insert(name.clone(), ty.clone());
-                    self.gen.do_sym(vis, name.clone(), ty);
+                    self.symtab.insert(name.clone(), Sym::make_global(ty));
 
                     // Read body (if present)
                     if maybe_want!(self, Token::LCurly) {
                         self.symtab.push_scope();
 
                         // Add paramters to scope
-                        for (name, ty) in &param_tab {
-                            self.symtab.insert(name.clone(), ty.clone());
+                        let mut params = Vec::new();
+                        for (name, ty) in param_name_ty.into_iter() {
+                            let local = make_local();
+                            params.push((ty.clone(), local.clone()));
+                            self.symtab.insert(name, Sym::make_local(ty, local));
                         }
 
                         // Read body
@@ -1544,7 +1612,7 @@ impl<'source> Parser<'source> {
                             .map(|stmt| self.finalize_stmt(stmt)).collect();
                         println!("Deduced AST: {:#?}", stmts);
 
-                        self.gen.do_func(name, rettype, param_tab, stmts);
+                        self.gen.do_func(name, rettype, params, stmts);
                     } else {
                         want!(self, Token::Semicolon)
                     }
