@@ -4,16 +4,39 @@
 // Code generation
 //
 
-use crate::ast::{Local,add_val,get_val,Expr,ExprKind,Ty,Stmt,Vis};
+use crate::ast::{Expr,ExprKind,Ty,Stmt,Vis};
+use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
 
-fn is_signed(ty: &Ty) -> bool {
-    match ty {
-        Ty::I8|Ty::I16|Ty::I32|Ty::I64 => true,
-        _ => false
+//
+// Local variables
+//
+
+#[derive(Debug)]
+pub struct Local {
+    vals: RefCell<Option<Val>>
+}
+
+impl Local {
+    pub fn new() -> Local {
+        Local {
+            vals: RefCell::new(None)
+        }
+    }
+
+    pub fn add_val(&self, val: Val) {
+        *self.vals.borrow_mut() = Some(val)
+    }
+
+    pub fn any_val(&self) -> Val {
+        self.vals.borrow().as_ref().unwrap().clone()
     }
 }
+
+//
+// Operation widths supported by x86
+//
 
 #[derive(Clone,Copy)]
 enum Width {
@@ -21,6 +44,24 @@ enum Width {
     Word    = 2,
     DWord   = 4,
     QWord   = 8,
+}
+
+fn loc_str(width: Width) -> &'static str {
+    match width {
+        Width::Byte => "byte",
+        Width::Word => "word",
+        Width::DWord => "dword",
+        Width::QWord => "qword",
+    }
+}
+
+fn data_str(width: Width) -> &'static str {
+    match width {
+        Width::Byte => "db",
+        Width::Word => "dw",
+        Width::DWord => "dd",
+        Width::QWord => "dq",
+    }
 }
 
 // Find the largest width operation possible on size bytes
@@ -44,7 +85,7 @@ fn type_width(ty: &Ty) -> Width {
     }
 }
 
-#[derive(Clone,Copy)]
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Hash)]
 enum Reg {
     Rax = 0,
     Rbx = 1,
@@ -54,13 +95,29 @@ enum Reg {
     Rdi = 5,
     R8  = 6,
     R9  = 7,
-    /*R10 = 8,
+    R10 = 8,
     R11 = 9,
     R12 = 10,
     R13 = 11,
     R14 = 12,
-    R15 = 13,*/
+    R15 = 13,
 }
+
+
+//
+// Register parameter order
+//
+
+const PARAMS: [Reg; 6] = [ Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9 ];
+
+//
+// All usable registers (in preferred allocation order)
+//
+
+const ALL_REGS: [Reg; 14] = [
+    Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15,           // Callee saved (using these is free)
+    Reg::Rsi, Reg::Rdi, Reg::R8, Reg::R9, Reg::R10, Reg::R11,   // Never needed
+    Reg::Rcx, Reg::Rdx, Reg::Rax, ];                            // Sometimes needed
 
 fn reg_str(width: Width, reg: Reg) -> &'static str {
     match width {
@@ -79,35 +136,9 @@ fn reg_str(width: Width, reg: Reg) -> &'static str {
     }
 }
 
-fn loc_str(width: Width) -> &'static str {
-    match width {
-        Width::Byte => "byte",
-        Width::Word => "word",
-        Width::DWord => "dword",
-        Width::QWord => "qword",
-    }
-}
-
-impl Reg {
-    fn to_str(&self, dtype: &Ty) -> &str {
-        match dtype {
-            Ty::Bool|Ty::U8|Ty::I8
-                => ["al", "bl", "cl", "dl", "sil", "dil", "r8b", "r9b", "r10b",
-                    "r11b", "r12b", "r13b", "r14b", "r15b"][*self as usize],
-            Ty::U16|Ty::I16
-                => ["ax", "bx", "cx", "dx", "si", "di", "r8w", "r9w", "r10w",
-                    "r11w", "r12w", "r13w", "r14w", "r15w"][*self as usize],
-            Ty::U32|Ty::I32
-                => ["eax", "ebx", "ecx", "edx", "esi", "edi", "r8d", "r9d", "r10d",
-                    "r11d", "r12d", "r13d", "r14d", "r15d"][*self as usize],
-            Ty::U64|Ty::I64|Ty::USize|Ty::Ptr{..}
-                => ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10",
-                    "r11", "r12", "r13", "r14", "r15"][*self as usize],
-            _
-                => panic!("Read or write to non-primtive type {:?}", dtype),
-        }
-    }
-}
+//
+// Condition codes for comparisons
+//
 
 #[derive(Clone,Copy)]
 enum Cond {
@@ -146,77 +177,33 @@ fn cond_str(signed: bool, cond: Cond) -> &'static str {
     }
 }
 
-fn asm_dataword(dtype: &Ty) -> &str {
-    match dtype {
-        Ty::U8|Ty::I8 => "db",
-        Ty::U16|Ty::I16 => "dw",
-        Ty::U32|Ty::I32 => "dd",
-        Ty::U64|Ty::I64|Ty::Ptr{..} => "dq",
-        _ => unreachable!(),
-    }
-}
-
-const PARAMS: [Reg; 6] = [ Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9 ];
-
 //
 // Promise for a runtime value
 //
 
-#[derive(Clone,Debug)]
+#[derive(Clone,Debug,Hash,PartialEq,Eq)]
 pub enum Val {
-    Imm(usize),               // Immediate constant
-    Off(usize),               // Reference to stack
-    Sym(Rc<str>, usize),      // Reference to symbol
-    Deref(Box<Val>, usize),   // De-reference of pointer
     Void,                     // Non-existent value
+    Imm(usize),               // Immediate constant
+    Loc(usize),               // Reference to stack
+    Glo(Rc<str>, usize),      // Reference to symbol
+    Deref(Box<Val>, usize),   // De-reference of pointer
 }
 
 impl Val {
-    fn ptr_to_reg(&self, text: &mut String, reg: Reg) {
-        let void_ptr = Ty::Ptr { base_type: Box::new(Ty::Void) };
+    fn with_offset(self, add: usize) -> Val {
         match self {
-            Val::Void => panic!("Use of void value"),
-            Val::Imm(_) => panic!("Cannot take address of immediate"),
-            Val::Off(offset) => writeln!(text, "lea {}, [rsp + {}]", reg.to_str(&void_ptr), offset).unwrap(),
-            Val::Sym(name, offset) => writeln!(text, "lea {}, [{} + {}]", reg.to_str(&void_ptr), name, offset).unwrap(),
-            Val::Deref(ptr, offset) => {
-                ptr.val_to_reg(text, &void_ptr, reg);
-                if *offset > 0 {
-                    writeln!(text, "lea {}, [{} + {}]",
-                        reg.to_str(&void_ptr), reg.to_str(&void_ptr), offset).unwrap();
-                }
-            },
-        }
-    }
-
-    fn val_to_reg(&self, text: &mut String, dtype: &Ty, reg: Reg) {
-        let void_ptr = Ty::Ptr { base_type: Box::new(Ty::Void) };
-        match self {
-            Val::Void => panic!("Use of void value"),
-            Val::Imm(val)
-                => writeln!(text, "mov {}, {}", reg.to_str(dtype), val).unwrap(),
-            Val::Off(offset)
-                => writeln!(text, "mov {}, [rsp + {}]", reg.to_str(dtype), offset).unwrap(),
-            Val::Sym(name, offset)
-                => writeln!(text, "mov {}, [{} + {}]", reg.to_str(dtype), name, offset).unwrap(),
-            Val::Deref(ptr, offset) => {
-                ptr.val_to_reg(text, &void_ptr, reg);
-                writeln!(text, "mov {}, [{} + {}]",
-                    reg.to_str(dtype), reg.to_str(&void_ptr), offset).unwrap();
-            },
-        }
-    }
-
-    fn with_offset(&self, add: usize) -> Val {
-        match self {
-            Val::Void => panic!("Use of void value"),
-            Val::Imm(_) => panic!("Offset from immediate"),
-            Val::Off(offset) => Val::Off(offset + add),
-            Val::Sym(name, offset) => Val::Sym(name.clone(), offset + add),
-            Val::Deref(ptr, offset) => Val::Deref(ptr.clone(), offset + add),
+            Val::Void | Val::Imm(_) => unreachable!(),
+            Val::Loc(offset) => Val::Loc(offset + add),
+            Val::Glo(name, offset) => Val::Glo(name, offset + add),
+            Val::Deref(ptr, offset) => Val::Deref(ptr, offset + add),
         }
     }
 }
+
+//
+// Code generator implementation
+//
 
 pub struct Gen {
     // Current function
@@ -260,7 +247,7 @@ impl Gen {
         let name: Rc<str> = format!("str${}", self.str_no).into();
         self.str_no += 1;
         // Generate data
-        write!(self.rodata, "{} {} ", name, asm_dataword(&chty)).unwrap();
+        write!(self.rodata, "{} db ", name).unwrap();
         for byte in data.bytes() {
             write!(self.rodata, "0x{:02x}, ", byte).unwrap();
         }
@@ -278,7 +265,7 @@ impl Gen {
             ExprKind::Const(val) => {
                 // Write constant to data section
                 // FIXME: align data
-                writeln!(self.data, "{} {}", asm_dataword(&expr.ty), val).unwrap();
+                writeln!(self.data, "{} {}", data_str(type_width(&expr.ty)), val).unwrap();
             },
             ExprKind::Compound(exprs) => {
                 for expr in exprs.iter() {
@@ -317,11 +304,11 @@ impl Gen {
     }
 
     fn alloc_ty(&mut self, ty: &Ty) -> Val {
-        Val::Off(self.stack_alloc(ty.get_size()))
+        Val::Loc(self.stack_alloc(ty.get_size()))
     }
 
     fn alloc_ptr(&mut self) -> Val {
-        Val::Off(self.stack_alloc(Width::QWord as usize))
+        Val::Loc(self.stack_alloc(Width::QWord as usize))
     }
 
     fn next_label(&mut self) -> usize {
@@ -330,14 +317,28 @@ impl Gen {
         label
     }
 
+    // Load the address of a value into a register
+    fn gen_lea(&mut self, reg: Reg, val: &Val) {
+        let dreg = reg_str(Width::QWord, reg);
+        match val {
+            Val::Void | Val::Imm(_) => unreachable!(),
+            Val::Loc(offset) => writeln!(self.code, "lea {}, [rsp + {}]", dreg, offset).unwrap(),
+            Val::Glo(name, offset) => writeln!(self.code, "lea {}, [{} + {}]", dreg, name, offset).unwrap(),
+            Val::Deref(ptr, offset) => {
+                self.gen_load(Width::QWord, reg, ptr);
+                writeln!(self.code, "lea {}, [{} + {}]", dreg, dreg, offset).unwrap()
+            },
+        }
+    }
+
     // Load a value with a certain width to a register
     fn gen_load(&mut self, width: Width, reg: Reg, val: &Val) {
         let dreg = reg_str(width, reg);
         match val {
             Val::Void => unreachable!(),
             Val::Imm(val) => writeln!(self.code, "mov {}, {}", dreg, val).unwrap(),
-            Val::Off(offset) => writeln!(self.code, "mov {}, [rsp + {}]", dreg, offset).unwrap(),
-            Val::Sym(name, offset) => writeln!(self.code, "mov {}, [{} + {}]", dreg, name, offset).unwrap(),
+            Val::Loc(offset) => writeln!(self.code, "mov {}, [rsp + {}]", dreg, offset).unwrap(),
+            Val::Glo(name, offset) => writeln!(self.code, "mov {}, [{} + {}]", dreg, name, offset).unwrap(),
             Val::Deref(ptr, offset) => {
                 self.gen_load(Width::QWord, reg, ptr);
                 writeln!(self.code, "mov {}, [{} + {}]", dreg, dreg, offset).unwrap()
@@ -350,8 +351,8 @@ impl Gen {
         let sreg = reg_str(width, reg);
         match val {
             Val::Void | Val::Imm(_) => unreachable!(),
-            Val::Off(offset) => writeln!(self.code, "mov [rsp + {}], {}", offset, sreg).unwrap(),
-            Val::Sym(name, offset) => writeln!(self.code, "mov [{} + {}], {}", name, offset, sreg).unwrap(),
+            Val::Loc(offset) => writeln!(self.code, "mov [rsp + {}], {}", offset, sreg).unwrap(),
+            Val::Glo(name, offset) => writeln!(self.code, "mov [{} + {}], {}", name, offset, sreg).unwrap(),
             Val::Deref(ptr, offset) => {
                 self.gen_load(Width::QWord, tmp_reg, ptr);
                 writeln!(self.code, "mov [{} + {}], {}",
@@ -397,9 +398,9 @@ impl Gen {
             Val::Void => unreachable!(),
             Val::Imm(val)
                 => writeln!(self.code, "mov {}, {}", dreg, val).unwrap(),
-            Val::Off(offset)
+            Val::Loc(offset)
                 => writeln!(self.code, "{} {}, {} [rsp + {}]", insn, dreg, sloc, offset).unwrap(),
-            Val::Sym(name, offset)
+            Val::Glo(name, offset)
                 => writeln!(self.code, "{} {}, {} [{} + {}]", insn, dreg, sloc, name, offset).unwrap(),
             Val::Deref(ptr, offset) => {
                 self.gen_load(Width::QWord, reg, ptr);
@@ -464,7 +465,7 @@ impl Gen {
         // x86 only has full-division with the upper half in dx
         writeln!(self.code, "xor edx, edx").unwrap();
         // Division also differs based on type
-        if is_signed(&lhs.ty) {
+        if lhs.ty.is_signed() {
             writeln!(self.code, "idiv {}", rhs_reg).unwrap();
         } else {
             writeln!(self.code, "div {}", rhs_reg).unwrap();
@@ -490,22 +491,22 @@ impl Gen {
                 let mut cur = off;
                 for expr in exprs.iter() {
                     let val = self.gen_expr(expr);
-                    self.gen_copy(Val::Off(cur), val, expr.ty.get_size());
+                    self.gen_copy(Val::Loc(cur), val, expr.ty.get_size());
                     cur += expr.ty.get_size();
                 }
-                Val::Off(off)
+                Val::Loc(off)
             },
             // Reference to symbol
             ExprKind::Global(name)
-                => Val::Sym(name.clone(), 0),
+                => Val::Glo(name.clone(), 0),
             ExprKind::Local(local)
-                => get_val(local),
+                => local.any_val(),
 
             // Prefix expressions
             ExprKind::Ref(inner) => {
                 // Save address to rax
                 let val = self.gen_expr(&*inner);
-                val.ptr_to_reg(&mut self.code, Reg::Rax);
+                self.gen_lea(Reg::Rax, &val);
                 // Save pointer to temporary
                 let tmp = self.alloc_ty(&expr.ty);
                 self.gen_store(type_width(&expr.ty), &tmp, Reg::Rax, Reg::Rbx);
@@ -537,9 +538,9 @@ impl Gen {
                     array_val.with_offset(index * elem_size)
                 } else {
                     // Generate a de-reference lvalue from a pointer to the element
-                    array_val.ptr_to_reg(&mut self.code, Reg::Rax);
-                    index_val.val_to_reg(&mut self.code, &Ty::USize, Reg::Rbx);
-                    writeln!(&mut self.code, "imul rbx, {}\nadd rax, rbx", elem_size).unwrap();
+                    self.gen_lea(Reg::Rax, &array_val);
+                    self.gen_load(type_width(&Ty::USize), Reg::Rbx, &index_val);
+                    writeln!(self.code, "imul rbx, {}\nadd rax, rbx", elem_size).unwrap();
 
                     // Allocate temporary
                     let tmp = self.alloc_ptr();
@@ -555,11 +556,11 @@ impl Gen {
                 // FIXME: more than 6 arguments
                 for (arg, reg) in args.iter().zip(PARAMS) {
                     let arg_val = self.gen_expr(arg);
-                    arg_val.val_to_reg(&mut self.code, &arg.ty, reg);
+                    self.gen_load(type_width(&arg.ty), reg, &arg_val);
                 }
 
                 // Move function address to rax
-                func_val.ptr_to_reg(&mut self.code, Reg::Rbx);
+                self.gen_lea(Reg::Rbx, &func_val);
 
                 // Verify type is actually a function
                 if let Ty::Func { varargs, rettype, .. } = &func.ty {
@@ -631,7 +632,7 @@ impl Gen {
                 writeln!(self.code, "mov byte [rsp + {}], 0", off).unwrap();
                 writeln!(self.code, ".{}:", lend).unwrap();
 
-                Val::Off(off)
+                Val::Loc(off)
             },
 
             // Cast
@@ -650,7 +651,7 @@ impl Gen {
         let rhs_reg = self.gen_arith_load(Reg::Rbx, &rhs.ty, &rhs_val);
 
         writeln!(self.code, "cmp {}, {}\n{} .{}", lhs_reg, rhs_reg,
-            cond_str(is_signed(&lhs.ty), cond), label).unwrap();
+            cond_str(lhs.ty.is_signed(), cond), label).unwrap();
 
     }
 
@@ -696,13 +697,11 @@ impl Gen {
                 self.gen_bool_expr(&*rhs, ltrue, lfalse);
             }
             _ => {
+                // NOTE: we know expr has type bool
                 let val = self.gen_expr(expr);
-                val.val_to_reg(&mut self.code, &expr.ty, Reg::Rax);
-                writeln!(self.code, "test {}, {}",
-                    Reg::Rax.to_str(&expr.ty),
-                    Reg::Rax.to_str(&expr.ty)).unwrap();
-                writeln!(self.code, "jnz .{}\njmp .{}", ltrue, lfalse)
-                    .unwrap();
+                self.gen_load(Width::Byte, Reg::Rax, &val);
+                writeln!(self.code, "test al, al").unwrap();
+                writeln!(self.code, "jnz .{}\njmp .{}", ltrue, lfalse).unwrap();
             },
         }
     }
@@ -719,16 +718,16 @@ impl Gen {
                 // Evaluate return value if present
                 if let Some(expr) = opt_expr {
                     let val = self.gen_expr(expr);
-                    val.val_to_reg(&mut self.code, &expr.ty, Reg::Rax);
+                    self.gen_load(type_width(&expr.ty), Reg::Rax, &val);
                 }
                 // Then jump to the end of function
-                writeln!(&mut self.code, "jmp .$done").unwrap();
+                writeln!(self.code, "jmp .$done").unwrap();
             },
             Stmt::Auto(ty, local, opt_expr) => {
                 let val = self.alloc_ty(ty);
 
                 // Add value to symbol
-                add_val(local, val.clone());
+                local.add_val(val.clone());
 
                 // Initialze variable if required
                 if let Some(expr) = opt_expr {
@@ -737,7 +736,7 @@ impl Gen {
                 }
             },
             Stmt::Label(label)
-                => writeln!(&mut self.code, ".{}:", label).unwrap(),
+                => writeln!(self.code, ".{}:", label).unwrap(),
             Stmt::Set(dst, src) => {
                 // Find source and destination value
                 let dval = self.gen_expr(dst);
@@ -746,7 +745,7 @@ impl Gen {
                 self.gen_copy(dval, sval, dst.ty.get_size());
             },
             Stmt::Jmp(label)
-                => writeln!(&mut self.code, "jmp .{}", label).unwrap(),
+                => writeln!(self.code, "jmp .{}", label).unwrap(),
             Stmt::If(cond, then, opt_else) => {
                 let lthen = self.next_label();
                 let lelse = self.next_label();
@@ -792,7 +791,8 @@ impl Gen {
         }
     }
 
-    pub fn do_func(&mut self, name: Rc<str>, _rettype: Ty, params: Vec<(Ty, Rc<Local>)>, stmts: Vec<Stmt>) {
+    pub fn do_func(&mut self, name: Rc<str>, params: Vec<(Ty, Rc<Local>)>, stmts: Vec<Stmt>) {
+        // Reset function specific fields
         self.frame_size = 0;
         self.label_no = 0;
         self.code.clear();
@@ -807,7 +807,7 @@ impl Gen {
             // Copy parameter to local variable
             self.gen_store(type_width(&ty), &val, PARAMS[i], Reg::Rbx);
             // Add local variable to parameter symbol
-            add_val(&local, val);
+            local.add_val(val);
         }
 
         // Generate statements

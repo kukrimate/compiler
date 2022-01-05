@@ -8,9 +8,8 @@
 
 use crate::lex::{Lexer,Token};
 use crate::gen::Gen;
-use crate::gen::Val;
+use crate::gen::Local;
 use std::collections::HashMap;
-use std::cell::RefCell;
 use std::rc::Rc;
 
 macro_rules! round_up {
@@ -76,6 +75,13 @@ pub enum Ty {
 }
 
 impl Ty {
+    pub fn is_signed(&self) -> bool {
+        match self {
+            Ty::I8|Ty::I16|Ty::I32|Ty::I64 => true,
+            _ => false
+        }
+    }
+
     pub fn get_align(&self) -> usize {
         match self {
             Ty::U8 | Ty::I8 | Ty::Bool => 1,
@@ -213,20 +219,6 @@ pub enum Vis {
 //
 // Chained hash tables used for a symbol table
 //
-
-pub type Local = RefCell<Vec<Val>>;
-
-fn make_local() -> Rc<Local> {
-    Rc::new(RefCell::new(Vec::new()))
-}
-
-pub fn add_val(local: &Local, val: Val) {
-    local.borrow_mut().push(val);
-}
-
-pub fn get_val(local: &Local) -> Val {
-    local.borrow()[0].clone()
-}
 
 #[derive(Debug)]
 pub enum SymKind {
@@ -1471,7 +1463,7 @@ impl<'source> Parser<'source> {
                 };
 
                 // Insert symbol
-                let local = make_local();
+                let local = Rc::new(Local::new());
                 self.symtab.insert(name, Sym::make_local(ty.clone(), local.clone()));
 
                 // Create statement
@@ -1595,7 +1587,7 @@ impl<'source> Parser<'source> {
                         // Add paramters to scope
                         let mut params = Vec::new();
                         for (name, ty) in param_name_ty.into_iter() {
-                            let local = make_local();
+                            let local = Rc::new(Local::new());
                             params.push((ty.clone(), local.clone()));
                             self.symtab.insert(name, Sym::make_local(ty, local));
                         }
@@ -1612,7 +1604,7 @@ impl<'source> Parser<'source> {
                             .map(|stmt| self.finalize_stmt(stmt)).collect();
                         println!("Deduced AST: {:#?}", stmts);
 
-                        self.gen.do_func(name, rettype, params, stmts);
+                        self.gen.do_func(name, params, stmts);
                     } else {
                         want!(self, Token::Semicolon)
                     }
