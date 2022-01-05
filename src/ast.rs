@@ -220,38 +220,8 @@ pub enum Vis {
 // Chained hash tables used for a symbol table
 //
 
-#[derive(Debug)]
-pub enum SymKind {
-    Global,
-    Local(Rc<Local>),
-}
-
-#[derive(Debug)]
-pub struct Sym {
-    // For every symbol
-    pub ty: Ty,
-    // Kind specific fields
-    pub kind: SymKind
-}
-
-impl Sym {
-    fn make_global(ty: Ty) -> Sym {
-        Sym {
-            ty: ty,
-            kind: SymKind::Global
-        }
-    }
-
-    fn make_local(ty: Ty, local: Rc<Local>) -> Sym {
-        Sym {
-            ty: ty,
-            kind: SymKind::Local(local)
-        }
-    }
-}
-
 struct SymTab {
-    list: Vec<HashMap<Rc<str>, Sym>>,
+    list: Vec<HashMap<Rc<str>, Expr>>,
 }
 
 impl SymTab {
@@ -263,16 +233,16 @@ impl SymTab {
         cm
     }
 
-    fn insert(&mut self, name: Rc<str>, sym: Sym) {
+    fn insert(&mut self, name: Rc<str>, expr: Expr) {
         let scope = self.list.last_mut().unwrap();
         if let None = scope.get(&name) {
-            scope.insert(name, sym);
+            scope.insert(name, expr);
         } else {
             panic!("Re-declaration of {}", name)
         }
     }
 
-    fn lookup(&mut self, name: &Rc<str>) -> &Sym {
+    fn lookup(&mut self, name: &Rc<str>) -> &Expr {
         for scope in self.list.iter().rev() {
             if let Some(ty) = scope.get(name) {
                 return ty;
@@ -1034,11 +1004,7 @@ impl<'source> Parser<'source> {
                 => if maybe_want!(self, Token::LCurly) {
                     self.want_record_literal(name)
                 } else {
-                    let sym = self.symtab.lookup(&name);
-                    match &sym.kind {
-                        SymKind::Global => Expr::make_global(sym.ty.clone(), name.clone()),
-                        SymKind::Local(local) => Expr::make_local(sym.ty.clone(), local.clone()),
-                    }
+                    self.symtab.lookup(&name).clone()
                 },
             Token::LSq
                 => self.want_array_literal(),
@@ -1464,7 +1430,7 @@ impl<'source> Parser<'source> {
 
                 // Insert symbol
                 let local = Rc::new(Local::new());
-                self.symtab.insert(name, Sym::make_local(ty.clone(), local.clone()));
+                self.symtab.insert(name, Expr::make_local(ty.clone(), local.clone()));
 
                 // Create statement
                 let stmt = Stmt::Auto(ty, local, opt_expr);
@@ -1529,7 +1495,7 @@ impl<'source> Parser<'source> {
                     }
 
                     // Add symbol
-                    self.symtab.insert(name, Sym::make_global(ty));
+                    self.symtab.insert(name.clone(), Expr::make_global(ty, name));
 
                     want!(self, Token::Semicolon);
                 },
@@ -1578,7 +1544,7 @@ impl<'source> Parser<'source> {
                         varargs: varargs,
                         rettype: Box::new(rettype.clone()),
                     };
-                    self.symtab.insert(name.clone(), Sym::make_global(ty));
+                    self.symtab.insert(name.clone(), Expr::make_global(ty, name.clone()));
 
                     // Read body (if present)
                     if maybe_want!(self, Token::LCurly) {
@@ -1589,7 +1555,7 @@ impl<'source> Parser<'source> {
                         for (name, ty) in param_name_ty.into_iter() {
                             let local = Rc::new(Local::new());
                             params.push((ty.clone(), local.clone()));
-                            self.symtab.insert(name, Sym::make_local(ty, local));
+                            self.symtab.insert(name, Expr::make_local(ty, local));
                         }
 
                         // Read body
