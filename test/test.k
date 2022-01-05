@@ -38,7 +38,7 @@ fn export main() -> i32 {
         auto arr: [i32; 5] = [ 0, 1, 2, 3, 4 ];
         auto i = 0;
         while (i < 5) {
-            eval printf("arr[%d] = %d\n", i, arr[i]);
+            eval printf("arr[%ld] = %d\n", i, arr[i]);
             set i = i + 1;
         }
     }

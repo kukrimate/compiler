@@ -326,7 +326,9 @@ impl Gen {
             Val::Glo(name, offset) => writeln!(self.code, "lea {}, [{} + {}]", dreg, name, offset).unwrap(),
             Val::Deref(ptr, offset) => {
                 self.gen_load(Width::QWord, reg, ptr);
-                writeln!(self.code, "lea {}, [{} + {}]", dreg, dreg, offset).unwrap()
+                if *offset > 0 {
+                    writeln!(self.code, "lea {}, [{} + {}]", dreg, dreg, offset).unwrap()
+                }
             },
         }
     }
@@ -341,7 +343,7 @@ impl Gen {
             Val::Glo(name, offset) => writeln!(self.code, "mov {}, [{} + {}]", dreg, name, offset).unwrap(),
             Val::Deref(ptr, offset) => {
                 self.gen_load(Width::QWord, reg, ptr);
-                writeln!(self.code, "mov {}, [{} + {}]", dreg, dreg, offset).unwrap()
+                writeln!(self.code, "mov {}, [{} + {}]", dreg, reg_str(Width::QWord, reg), offset).unwrap()
             },
         }
     }
