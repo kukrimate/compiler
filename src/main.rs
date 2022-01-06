@@ -3,6 +3,7 @@
 mod ast;
 mod gen;
 mod lex;
+mod lower;
 
 use clap::{Arg,App};
 use std::process::Command;
@@ -62,7 +63,7 @@ fn main() {
     let data = std::fs::read_to_string(args.value_of("INPUT").unwrap()).unwrap();
     let output_path = args.value_of("output").unwrap();
 
-    let mut gen = gen::Gen::new();
+    let mut gen = gen::nasm::GenNasm::new();
     ast::parse_file(&data, &mut gen);
 
     if args.occurrences_of("assembly") > 0 {

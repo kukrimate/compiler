@@ -6,7 +6,8 @@
 
 use crate::lex::{Lexer,Token};
 use crate::gen::Gen;
-use crate::gen::Local;
+use crate::lower::{DataLower,FuncLower};
+
 use std::collections::{HashMap,VecDeque};
 use std::rc::Rc;
 
@@ -191,6 +192,9 @@ impl Ty {
 // Abstract syntax tree elements
 //
 
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Hash)]
+pub struct Local(usize);
+
 #[derive(Clone,Debug)]
 pub enum ExprKind {
     // Constant value
@@ -199,7 +203,7 @@ pub enum ExprKind {
     Compound(Vec<Expr>),
     // Reference to symbol
     Global(Rc<str>),
-    Local(Rc<Local>),
+    Local(Local),
     // Postfix expressions
     Field(Box<Expr>, usize),
     Call(Box<Expr>, Vec<Expr>),
@@ -254,7 +258,7 @@ impl Expr {
         }
     }
 
-    fn make_local(ty: Ty, local: Rc<Local>) -> Expr {
+    fn make_local(ty: Ty, local: Local) -> Expr {
         Expr {
             ty: ty,
             kind: ExprKind::Local(local),
@@ -267,7 +271,7 @@ pub enum Stmt {
     Block(Vec<Stmt>),
     Eval(Expr),
     Ret(Option<Expr>),
-    Auto(Ty, Rc<Local>, Option<Expr>),
+    Auto(Ty, Local, Option<Expr>),
     Label(Rc<str>),
     Set(Expr, Expr),
     Jmp(Rc<str>),
@@ -333,31 +337,41 @@ impl SymTab {
 // Parser context
 //
 
-struct Parser<'a> {
+struct Parser<'a, T> {
     // Lexer and temorary token
     ts: TokenStream<'a>,
     // Code generation backend
-    gen: &'a mut Gen,
+    gen: &'a mut T,
     // Currently defined record types
     records: HashMap<Rc<str>, Ty>,
     // Symbol table
     symtab: SymTab,
+    // Local variable index
+    loc: usize,
     // Ty variable index
     tvar: usize,
     // Ty variable constraints
     tvarmap: HashMap<usize, Ty>,
 }
 
-impl<'a> Parser<'a> {
-    fn new(lexer: &'a mut Lexer<'a>, gen: &'a mut Gen) -> Self {
+impl<'a, T: Gen> Parser<'a, T> {
+    fn new(lexer: &'a mut Lexer<'a>, gen: &'a mut T) -> Self {
         Parser {
             ts: TokenStream::new(lexer),
             gen: gen,
             records: HashMap::new(),
             symtab: SymTab::new(),
+            loc: 0,
             tvar: 0,
             tvarmap: HashMap::new(),
         }
+    }
+
+    // Create a new unique local variable
+    fn next_local(&mut self) -> Local {
+        let loc = self.loc;
+        self.loc += 1;
+        Local(loc)
     }
 
     // Create a new unique type variable
@@ -1473,8 +1487,8 @@ impl<'a> Parser<'a> {
                 };
 
                 // Insert symbol
-                let local = Rc::new(Local::new());
-                self.symtab.insert(name, Expr::make_local(ty.clone(), local.clone()));
+                let local = self.next_local();
+                self.symtab.insert(name, Expr::make_local(ty.clone(), local));
 
                 // Create statement
                 let stmt = Stmt::Auto(ty, local, opt_expr);
@@ -1549,7 +1563,9 @@ impl<'a> Parser<'a> {
                         expr = self.finalize_expr(expr);
 
                         // Create data
-                        self.gen.do_data(&name, &expr);
+                        let mut lower = DataLower::new(self.gen.begin_data(&name));
+                        lower.expr(&expr);
+                        self.gen.end_data(lower.end());
                     } else {
                         // Reserve bss space
                         self.gen.do_bss(&name, &ty);
@@ -1610,28 +1626,37 @@ impl<'a> Parser<'a> {
                     // Read body (if present)
                     if maybe_want!(self.ts, Token::LCurly) {
                         self.symtab.push_scope();
-
                         // Add paramters to scope
                         let mut params = Vec::new();
                         for (name, ty) in param_name_ty.into_iter() {
-                            let local = Rc::new(Local::new());
-                            params.push((ty.clone(), local.clone()));
+                            let local = self.next_local();
+                            params.push((local.clone(), ty.clone()));
                             self.symtab.insert(name, Expr::make_local(ty, local));
                         }
-
-                        // Read body
+                        // Parse body
                         let mut stmts = self.want_stmts(&rettype);
-
                         self.symtab.pop_scope();
 
-                        // Generate body
-                        println!("AST: {:#?}", stmts);
-                        println!("Constraints: {:#?}", self.tvarmap);
+                        // Perform type deduction
+
+                        // println!("AST: {:#?}", stmts);
+                        // println!("Constraints: {:#?}", self.tvarmap);
+
                         stmts = stmts.into_iter()
                             .map(|stmt| self.finalize_stmt(stmt)).collect();
-                        println!("Deduced AST: {:#?}", stmts);
 
-                        self.gen.do_func(name, params, stmts);
+                        // println!("Deduced AST: {:#?}", stmts);
+
+                        let mut lower = FuncLower::new(self.gen.begin_func(&name));
+                        // Generate parameters
+                        for (local, ty) in params {
+                            lower.param(local, &ty);
+                        }
+                        // Generate statements
+                        for stmt in &stmts {
+                            lower.stmt(stmt);
+                        }
+                        self.gen.end_func(lower.end());
                     } else {
                         want!(self.ts, Token::Semicolon)
                     }
@@ -1643,14 +1668,16 @@ impl<'a> Parser<'a> {
             // Clear file element specific data
             //
 
+            self.loc = 0;
             self.tvar = 0;
             self.tvarmap.clear();
         }
     }
 }
 
-pub fn parse_file(data: &str, gen: &mut Gen) {
+pub fn parse_file<T: Gen>(data: &str, gen: &mut T) {
     let mut lexer = Lexer::new(data);
     let mut parser = Parser::new(&mut lexer, gen);
     parser.process();
 }
+
