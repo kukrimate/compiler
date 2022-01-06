@@ -95,12 +95,14 @@ enum Reg {
     Rdi = 5,
     R8  = 6,
     R9  = 7,
+    /*
     R10 = 8,
     R11 = 9,
     R12 = 10,
     R13 = 11,
     R14 = 12,
     R15 = 13,
+    */
 }
 
 
@@ -114,10 +116,12 @@ const PARAMS: [Reg; 6] = [ Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg:
 // All usable registers (in preferred allocation order)
 //
 
+/*
 const ALL_REGS: [Reg; 14] = [
     Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15,           // Callee saved (using these is free)
     Reg::Rsi, Reg::Rdi, Reg::R8, Reg::R9, Reg::R10, Reg::R11,   // Never needed
     Reg::Rcx, Reg::Rdx, Reg::Rax, ];                            // Sometimes needed
+*/
 
 fn reg_str(width: Width, reg: Reg) -> &'static str {
     match width {

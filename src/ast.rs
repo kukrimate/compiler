@@ -4,22 +4,88 @@
 // Recursive descent parser for the grammer described in "grammar.txt"
 //
 
-#![macro_use]
-
 use crate::lex::{Lexer,Token};
 use crate::gen::Gen;
 use crate::gen::Local;
-use std::collections::HashMap;
+use std::collections::{HashMap,VecDeque};
 use std::rc::Rc;
 
-macro_rules! round_up {
-    ($val:expr,$bound:expr) => {
-        ($val + $bound - 1) / $bound * $bound
+//
+// Wrapper around the lexical analyzer for supporting lookahead
+//
+
+struct TokenStream<'a> {
+    lexer: &'a mut Lexer<'a>,
+    queue: VecDeque<Token>,
+}
+
+impl<'a> TokenStream<'a> {
+    fn new(lexer: &'a mut Lexer<'a>) -> Self {
+        TokenStream {
+            lexer: lexer,
+            queue: VecDeque::new(),
+        }
+    }
+
+    // Lookahead at the ith token in the stream
+    fn look(&mut self, i: usize) -> Option<&Token> {
+        // Make sure we have at least i+1 tokens queued
+        // Bail if the lexer runs out of tokens during this
+        while i >= self.queue.len() {
+            self.queue.push_back(self.lexer.next()?)
+        }
+        // Here we know we can return a reference to the ith token
+        self.queue.get(i)
+    }
+
+    // Read the next token from the stream
+    fn next(&mut self) -> Option<Token> {
+        if let some @ Some(_) = self.queue.pop_front() {
+            some
+        } else {
+            self.lexer.next()
+        }
+    }
+
+    // Read the next token
+    fn next_token(&mut self) -> Token {
+        self.next().expect("Expected token")
+    }
+
+    // Read an identifier
+    fn next_ident(&mut self) -> Rc<str> {
+        match self.next() {
+            Some(Token::Ident(val)) => val,
+            got => panic!("Expected identifier, got {:?}", got),
+        }
+    }
+
+}
+
+macro_rules! want {
+    ($self:expr, $want:path) => {
+        match $self.next() {
+            Some($want) => (),
+            got => panic!("Expected {:?} got {:?}", $want, got),
+        }
     }
 }
 
+macro_rules! maybe_want {
+    ($self:expr, $want:pat) => {
+        match $self.look(0) {
+            Some($want) => {
+                $self.next();
+                true
+            },
+            _ => false,
+        }
+    }
+}
+
+
 //
-// Ty expression
+// Type expressions
 //
 
 #[derive(Clone,Debug)]
@@ -226,11 +292,11 @@ struct SymTab {
 
 impl SymTab {
     fn new() -> SymTab {
-        let mut cm = SymTab {
+        let mut symtab = SymTab {
             list: Vec::new(),
         };
-        cm.list.push(HashMap::new());
-        cm
+        symtab.list.push(HashMap::new());
+        symtab
     }
 
     fn insert(&mut self, name: Rc<str>, expr: Expr) {
@@ -267,12 +333,11 @@ impl SymTab {
 // Parser context
 //
 
-struct Parser<'source> {
+struct Parser<'a> {
     // Lexer and temorary token
-    tmp: Option<Token>,
-    lex: &'source mut Lexer<'source>,
+    ts: TokenStream<'a>,
     // Code generation backend
-    gen: &'source mut Gen,
+    gen: &'a mut Gen,
     // Currently defined record types
     records: HashMap<Rc<str>, Ty>,
     // Symbol table
@@ -283,32 +348,10 @@ struct Parser<'source> {
     tvarmap: HashMap<usize, Ty>,
 }
 
-macro_rules! want {
-    ($self:expr, $want:path) => {
-        match $self.tmp {
-            Some($want) => $self.tmp = $self.lex.next(),
-            _ => panic!("Expected {:?} got {:?}", $want, $self.tmp),
-        }
-    }
-}
-
-macro_rules! maybe_want {
-    ($self:expr, $want:pat) => {
-        match $self.tmp {
-            Some($want) => {
-                $self.tmp = $self.lex.next();
-                true
-            },
-            _ => false,
-        }
-    }
-}
-
-impl<'source> Parser<'source> {
-    fn new(lex: &'source mut Lexer<'source>, gen: &'source mut Gen) -> Parser<'source> {
+impl<'a> Parser<'a> {
+    fn new(lexer: &'a mut Lexer<'a>, gen: &'a mut Gen) -> Self {
         Parser {
-            tmp: lex.next(),
-            lex: lex,
+            ts: TokenStream::new(lexer),
             gen: gen,
             records: HashMap::new(),
             symtab: SymTab::new(),
@@ -849,30 +892,11 @@ impl<'source> Parser<'source> {
         }
     }
 
-    // Read the next token
-    fn next_token(&mut self) -> Token {
-        std::mem::replace(&mut self.tmp, self.lex.next()).unwrap()
-    }
-
-    // Read an identifier
-    fn want_ident(&mut self) -> Rc<str> {
-        match &self.tmp {
-            Some(Token::Ident(_)) => {
-                if let Token::Ident(s) = self.next_token() {
-                    s
-                } else {
-                    unreachable!()
-                }
-            },
-            tok => panic!("Expected identifier, got {:?}!", tok),
-        }
-    }
-
     // Read a visibility (or return Vis::Private)
     fn maybe_want_vis(&mut self) -> Vis {
-        if maybe_want!(self, Token::Export) {
+        if maybe_want!(self.ts, Token::Export) {
             Vis::Export
-        } else if maybe_want!(self, Token::Extern) {
+        } else if maybe_want!(self.ts, Token::Extern) {
             Vis::Extern
         } else {
             Vis::Private
@@ -882,7 +906,7 @@ impl<'source> Parser<'source> {
     // Read an integer type (or return None)
     fn want_type_suffix(&mut self) -> Option<Ty> {
         // Match for type suffix
-        let suf = match self.tmp {
+        let suf = match self.ts.look(0) {
             Some(Token::U8)   => Ty::U8,
             Some(Token::I8)   => Ty::I8,
             Some(Token::U16)  => Ty::U16,
@@ -894,8 +918,8 @@ impl<'source> Parser<'source> {
             Some(Token::USize)=> Ty::USize,
             _ => return None,
         };
-        // Replace temporary token if matched
-        self.tmp = self.lex.next();
+        // Remove matched token from stream
+        self.ts.next();
         Some(suf)
     }
 
@@ -903,12 +927,12 @@ impl<'source> Parser<'source> {
         let mut elem_ty = self.next_tvar();
         let mut elems = Vec::new();
 
-        while !maybe_want!(self, Token::RSq) {
+        while !maybe_want!(self.ts, Token::RSq) {
             let expr = self.want_expr();
             elem_ty = self.unify(&elem_ty, &expr.ty);
             elems.push(expr);
-            if !maybe_want!(self, Token::Comma) {
-                want!(self, Token::RSq);
+            if !maybe_want!(self.ts, Token::Comma) {
+                want!(self.ts, Token::RSq);
                 break;
             }
         }
@@ -938,9 +962,9 @@ impl<'source> Parser<'source> {
 
         // Read expressions
         let mut expr_map = HashMap::new();
-        while !maybe_want!(self, Token::RCurly) {
+        while !maybe_want!(self.ts, Token::RCurly) {
             // Read field name
-            let name = self.want_ident();
+            let name = self.ts.next_ident();
 
             // Check for duplicate field
             if let Some(_) = expr_map.get(&name) {
@@ -948,12 +972,12 @@ impl<'source> Parser<'source> {
             }
 
             // Read field initializer
-            want!(self, Token::Colon);
+            want!(self.ts, Token::Colon);
             expr_map.insert(name, self.want_expr());
 
             // See if we've reached the end
-            if !maybe_want!(self, Token::Comma) {
-                want!(self, Token::RCurly);
+            if !maybe_want!(self.ts, Token::Comma) {
+                want!(self.ts, Token::RCurly);
                 break;
             }
         }
@@ -982,10 +1006,10 @@ impl<'source> Parser<'source> {
     }
 
     fn want_primary(&mut self) -> Expr {
-        match self.next_token() {
+        match self.ts.next_token() {
             Token::LParen => {
                 let expr = self.want_expr();
-                want!(self, Token::RParen);
+                want!(self.ts, Token::RParen);
                 expr
             },
             Token::Str(data) => {
@@ -1001,7 +1025,7 @@ impl<'source> Parser<'source> {
                 ref_expr
             },
             Token::Ident(name)
-                => if maybe_want!(self, Token::LCurly) {
+                => if maybe_want!(self.ts, Token::LCurly) {
                     self.want_record_literal(name)
                 } else {
                     self.symtab.lookup(&name).clone()
@@ -1025,23 +1049,23 @@ impl<'source> Parser<'source> {
     fn want_postfix(&mut self) -> Expr {
         let mut expr = self.want_primary();
         loop {
-            if maybe_want!(self, Token::Dot) {
-                let name = self.want_ident();
+            if maybe_want!(self.ts, Token::Dot) {
+                let name = self.ts.next_ident();
                 expr = self.make_field(expr, name);
-            } else if maybe_want!(self, Token::LParen) {
+            } else if maybe_want!(self.ts, Token::LParen) {
                 let mut args = Vec::new();
-                while !maybe_want!(self, Token::RParen) {
+                while !maybe_want!(self.ts, Token::RParen) {
                     args.push(self.want_expr());
-                    if !maybe_want!(self, Token::Comma) {
-                        want!(self, Token::RParen);
+                    if !maybe_want!(self.ts, Token::Comma) {
+                        want!(self.ts, Token::RParen);
                         break;
                     }
                 }
                 expr = self.make_call(expr, args);
-            } else if maybe_want!(self, Token::LSq) {
+            } else if maybe_want!(self.ts, Token::LSq) {
                 let index = self.want_expr();
                 expr = self.make_elem(expr, index);
-                want!(self, Token::RSq);
+                want!(self.ts, Token::RSq);
             } else {
                 return expr;
             }
@@ -1049,22 +1073,22 @@ impl<'source> Parser<'source> {
     }
 
     fn want_unary(&mut self) -> Expr {
-        if maybe_want!(self, Token::Sub) {
+        if maybe_want!(self.ts, Token::Sub) {
             let expr = self.want_unary();
             self.make_neg(expr)
-        } else if maybe_want!(self, Token::Tilde) {
+        } else if maybe_want!(self.ts, Token::Tilde) {
             let expr = self.want_unary();
             self.make_not(expr)
-        } else if maybe_want!(self, Token::Excl) {
+        } else if maybe_want!(self.ts, Token::Excl) {
             let expr = self.want_unary();
             self.make_lnot(expr)
-        } else if maybe_want!(self, Token::Mul) {
+        } else if maybe_want!(self.ts, Token::Mul) {
             let expr = self.want_unary();
             self.make_deref(expr)
-        } else if maybe_want!(self, Token::And) {
+        } else if maybe_want!(self.ts, Token::And) {
             let expr = self.want_unary();
             self.make_ref(expr)
-        } else if maybe_want!(self, Token::Add) {
+        } else if maybe_want!(self.ts, Token::Add) {
             self.want_unary()
         } else {
             self.want_postfix()
@@ -1073,7 +1097,7 @@ impl<'source> Parser<'source> {
 
     fn want_cast(&mut self) -> Expr {
         let mut expr = self.want_unary();
-        while maybe_want!(self, Token::As) {
+        while maybe_want!(self.ts, Token::As) {
             let ty = self.want_type();
             expr = self.make_cast(expr, ty);
         }
@@ -1083,13 +1107,13 @@ impl<'source> Parser<'source> {
     fn want_mul(&mut self) -> Expr {
         let mut expr = self.want_cast();
         loop {
-            if maybe_want!(self, Token::Mul) {
+            if maybe_want!(self.ts, Token::Mul) {
                 let expr2 = self.want_cast();
                 expr = self.make_mul(expr, expr2);
-            } else if maybe_want!(self, Token::Div) {
+            } else if maybe_want!(self.ts, Token::Div) {
                 let expr2 = self.want_cast();
                 expr = self.make_div(expr, expr2);
-            } else if maybe_want!(self, Token::Rem) {
+            } else if maybe_want!(self.ts, Token::Rem) {
                 let expr2 = self.want_cast();
                 expr = self.make_rem(expr, expr2);
             } else {
@@ -1101,10 +1125,10 @@ impl<'source> Parser<'source> {
     fn want_add(&mut self) -> Expr {
         let mut expr = self.want_mul();
         loop {
-            if maybe_want!(self, Token::Add) {
+            if maybe_want!(self.ts, Token::Add) {
                 let expr2 = self.want_mul();
                 expr = self.make_add(expr, expr2);
-            } else if maybe_want!(self, Token::Sub) {
+            } else if maybe_want!(self.ts, Token::Sub) {
                 let expr2 = self.want_mul();
                 expr = self.make_sub(expr, expr2);
             } else {
@@ -1116,10 +1140,10 @@ impl<'source> Parser<'source> {
     fn want_shift(&mut self) -> Expr {
         let mut expr = self.want_add();
         loop {
-            if maybe_want!(self, Token::Lsh) {
+            if maybe_want!(self.ts, Token::Lsh) {
                 let expr2 = self.want_add();
                 expr = self.make_lsh(expr, expr2);
-            } else if maybe_want!(self, Token::Rsh) {
+            } else if maybe_want!(self.ts, Token::Rsh) {
                 let expr2 = self.want_add();
                 expr = self.make_rsh(expr, expr2);
             } else {
@@ -1131,7 +1155,7 @@ impl<'source> Parser<'source> {
     fn want_and(&mut self) -> Expr {
         let mut expr = self.want_shift();
         loop {
-            if maybe_want!(self, Token::And) {
+            if maybe_want!(self.ts, Token::And) {
                 let expr2 = self.want_shift();
                 expr = self.make_and(expr, expr2);
             } else {
@@ -1143,7 +1167,7 @@ impl<'source> Parser<'source> {
     fn want_xor(&mut self) -> Expr {
         let mut expr = self.want_and();
         loop {
-            if maybe_want!(self, Token::Xor) {
+            if maybe_want!(self.ts, Token::Xor) {
                 let expr2 = self.want_and();
                 expr = self.make_xor(expr, expr2);
             } else {
@@ -1155,7 +1179,7 @@ impl<'source> Parser<'source> {
     fn want_or(&mut self) -> Expr {
         let mut expr = self.want_xor();
         loop {
-            if maybe_want!(self, Token::Or) {
+            if maybe_want!(self.ts, Token::Or) {
                 let expr2 = self.want_xor();
                 expr = self.make_or(expr, expr2);
             } else {
@@ -1166,22 +1190,22 @@ impl<'source> Parser<'source> {
 
     fn want_cmp(&mut self) -> Expr {
         let expr = self.want_or();
-        if maybe_want!(self, Token::Lt) {
+        if maybe_want!(self.ts, Token::Lt) {
             let expr2 = self.want_or();
             self.make_lt(expr, expr2)
-        } else if maybe_want!(self, Token::Le) {
+        } else if maybe_want!(self.ts, Token::Le) {
             let expr2 = self.want_or();
             self.make_le(expr, expr2)
-        } else if maybe_want!(self, Token::Gt) {
+        } else if maybe_want!(self.ts, Token::Gt) {
             let expr2 = self.want_or();
             self.make_gt(expr, expr2)
-        } else if maybe_want!(self, Token::Ge) {
+        } else if maybe_want!(self.ts, Token::Ge) {
             let expr2 = self.want_or();
             self.make_ge(expr, expr2)
-        } else if maybe_want!(self, Token::Eq) {
+        } else if maybe_want!(self.ts, Token::Eq) {
             let expr2 = self.want_or();
             self.make_eq(expr, expr2)
-        } else if maybe_want!(self, Token::Ne) {
+        } else if maybe_want!(self.ts, Token::Ne) {
             let expr2 = self.want_or();
             self.make_ne(expr, expr2)
         } else {
@@ -1192,7 +1216,7 @@ impl<'source> Parser<'source> {
     fn want_land(&mut self) -> Expr {
         let mut expr = self.want_cmp();
         loop {
-            if maybe_want!(self, Token::LAnd) {
+            if maybe_want!(self.ts, Token::LAnd) {
                 let expr2 = self.want_cmp();
                 expr = self.make_land(expr, expr2);
             } else {
@@ -1204,7 +1228,7 @@ impl<'source> Parser<'source> {
     fn want_lor(&mut self) -> Expr {
         let mut expr = self.want_land();
         loop {
-            if maybe_want!(self, Token::LAnd) {
+            if maybe_want!(self.ts, Token::LAnd) {
                 let expr2 = self.want_land();
                 expr = self.make_lor(expr, expr2);
             } else {
@@ -1218,7 +1242,7 @@ impl<'source> Parser<'source> {
     }
 
     fn want_type(&mut self) -> Ty {
-        match self.next_token() {
+        match self.ts.next_token() {
             Token::Bool => Ty::Bool,
             Token::U8   => Ty::U8,
             Token::I8   => Ty::I8,
@@ -1234,14 +1258,14 @@ impl<'source> Parser<'source> {
             },
             Token::LSq  => {
                 let elem_type = self.want_type();
-                want!(self, Token::Semicolon);
+                want!(self.ts, Token::Semicolon);
                 let expr = self.want_expr();
                 self.unify(&expr.ty, &Ty::USize);
                 let elem_count = match self.finalize_expr(expr).kind {
                     ExprKind::Const(val) => val,
                     _ => panic!("Array element count must be constnat"),
                 };
-                want!(self, Token::RSq);
+                want!(self.ts, Token::RSq);
 
                 Ty::Array {
                     elem_type: Box::new(elem_type),
@@ -1257,24 +1281,24 @@ impl<'source> Parser<'source> {
             },
             Token::Fn => {
                 // Read parameter types
-                want!(self, Token::LParen);
+                want!(self.ts, Token::LParen);
                 let mut params = Vec::new();
                 let mut varargs = false;
-                while !maybe_want!(self, Token::RParen) {
-                    if maybe_want!(self, Token::Varargs) {
+                while !maybe_want!(self.ts, Token::RParen) {
+                    if maybe_want!(self.ts, Token::Varargs) {
                         varargs = true;
-                        want!(self, Token::LParen);
+                        want!(self.ts, Token::LParen);
                         break;
                     }
                     params.push(self.want_type());
-                    if !maybe_want!(self, Token::Comma) {
-                        want!(self, Token::RParen);
+                    if !maybe_want!(self.ts, Token::Comma) {
+                        want!(self.ts, Token::RParen);
                         break;
                     }
                 }
 
                 // Read return type
-                let rettype = if maybe_want!(self, Token::Arrow) {
+                let rettype = if maybe_want!(self.ts, Token::Arrow) {
                     self.want_type()
                 } else {
                     Ty::Void
@@ -1291,17 +1315,21 @@ impl<'source> Parser<'source> {
     }
 
     fn want_record(&mut self, name: Rc<str>) -> Ty {
+        fn round_up(val: usize, bound: usize) -> usize {
+            (val + bound - 1) / bound * bound
+        }
+
         let mut lookup = HashMap::new();
         let mut fields = Vec::new();
         let mut max_align = 0;
         let mut offset = 0;
 
-        want!(self, Token::LCurly);
+        want!(self.ts, Token::LCurly);
 
         // Read fields until }
-        while !maybe_want!(self, Token::RCurly) {
-            lookup.insert(self.want_ident(), fields.len());
-            want!(self, Token::Colon);
+        while !maybe_want!(self.ts, Token::RCurly) {
+            lookup.insert(self.ts.next_ident(), fields.len());
+            want!(self.ts, Token::Colon);
 
             let field_type = self.want_type();
             let field_align = field_type.get_align();
@@ -1313,18 +1341,18 @@ impl<'source> Parser<'source> {
             }
 
             // Round field offset to correct alignment
-            offset = round_up!(offset, field_align);
+            offset = round_up(offset, field_align);
             fields.push((field_type, offset));
             offset += field_size;
 
-            if !maybe_want!(self, Token::Comma) {
-                want!(self, Token::RCurly);
+            if !maybe_want!(self.ts, Token::Comma) {
+                want!(self.ts, Token::RCurly);
                 break;
             }
         }
 
         // Record type declaration must end in semicolon
-        want!(self, Token::Semicolon);
+        want!(self.ts, Token::Semicolon);
 
         Ty::Record {
             name: name,
@@ -1333,13 +1361,13 @@ impl<'source> Parser<'source> {
             align: max_align,
             // Round struct size to a multiple of it's alignment, this is needed
             // if an array is ever created of this struct
-            size: round_up!(offset, max_align),
+            size: round_up(offset, max_align),
         }
     }
 
     fn want_stmts(&mut self, rettype: &Ty) -> Vec<Stmt> {
         let mut stmts = Vec::new();
-        while !maybe_want!(self, Token::RCurly) {
+        while !maybe_want!(self.ts, Token::RCurly) {
             stmts.push(self.want_stmt(rettype));
         }
         stmts
@@ -1354,17 +1382,17 @@ impl<'source> Parser<'source> {
 
     fn want_if(&mut self, rettype: &Ty) -> Stmt {
         // Read conditional
-        want!(self, Token::LParen);
+        want!(self.ts, Token::LParen);
         let cond = self.want_expr();
-        want!(self, Token::RParen);
+        want!(self.ts, Token::RParen);
 
         // Read true branch
-        want!(self, Token::LCurly);
+        want!(self.ts, Token::LCurly);
         let then = self.want_block(rettype);
 
         // Read else branch if present
-        let _else = if maybe_want!(self, Token::Else) {
-            Some(Box::new(match self.next_token() {
+        let _else = if maybe_want!(self.ts, Token::Else) {
+            Some(Box::new(match self.ts.next_token() {
                 Token::LCurly => self.want_block(rettype),
                 Token::If => self.want_if(rettype),
                 _ => panic!("Expected block or if after else")
@@ -1378,27 +1406,27 @@ impl<'source> Parser<'source> {
 
     fn want_while(&mut self, rettype: &Ty) -> Stmt {
         // Read conditional
-        want!(self, Token::LParen);
+        want!(self.ts, Token::LParen);
         let cond = self.want_expr();
-        want!(self, Token::RParen);
+        want!(self.ts, Token::RParen);
 
         // Read body
-        want!(self, Token::LCurly);
+        want!(self.ts, Token::LCurly);
         let body = self.want_block(rettype);
 
         Stmt::While(cond, Box::new(body))
     }
 
     fn want_stmt(&mut self, rettype: &Ty) -> Stmt {
-        match self.next_token() {
+        match self.ts.next_token() {
             Token::LCurly => self.want_block(rettype),
             Token::Eval => {
                 let stmt = Stmt::Eval(self.want_expr());
-                want!(self, Token::Semicolon);
+                want!(self.ts, Token::Semicolon);
                 stmt
             },
             Token::Ret => {
-                let stmt = if maybe_want!(self, Token::Semicolon) {
+                let stmt = if maybe_want!(self.ts, Token::Semicolon) {
                     // NOTE: return since we already have the semicolon
                     return Stmt::Ret(None)
                 } else {
@@ -1406,21 +1434,21 @@ impl<'source> Parser<'source> {
                     self.unify(&expr.ty, rettype);
                     Stmt::Ret(Some(expr))
                 };
-                want!(self, Token::Semicolon);
+                want!(self.ts, Token::Semicolon);
                 stmt
             },
             Token::Auto => {
-                let name = self.want_ident();
+                let name = self.ts.next_ident();
 
                 // Read type (or create type variable)
-                let mut ty = if maybe_want!(self, Token::Colon) {
+                let mut ty = if maybe_want!(self.ts, Token::Colon) {
                     self.want_type()
                 } else {
                     self.next_tvar()
                 };
 
                 // Unify type with initializer type
-                let opt_expr = if maybe_want!(self, Token::Assign) {
+                let opt_expr = if maybe_want!(self.ts, Token::Assign) {
                     let expr = self.want_expr();
                     ty = self.unify(&ty, &expr.ty);
                     Some(expr)
@@ -1434,25 +1462,25 @@ impl<'source> Parser<'source> {
 
                 // Create statement
                 let stmt = Stmt::Auto(ty, local, opt_expr);
-                want!(self, Token::Semicolon);
+                want!(self.ts, Token::Semicolon);
                 stmt
             },
             Token::Ident(s) => {
-                want!(self, Token::Colon);
+                want!(self.ts, Token::Colon);
                 Stmt::Label(s)
             },
             Token::Set => {
                 let dst = self.want_expr();
-                want!(self, Token::Assign);
+                want!(self.ts, Token::Assign);
                 let src = self.want_expr();
-                want!(self, Token::Semicolon);
+                want!(self.ts, Token::Semicolon);
 
                 self.unify(&dst.ty, &src.ty);
                 Stmt::Set(dst, src)
             },
             Token::Jmp => {
-                let stmt = Stmt::Jmp(self.want_ident());
-                want!(self, Token::Semicolon);
+                let stmt = Stmt::Jmp(self.ts.next_ident());
+                want!(self.ts, Token::Semicolon);
                 stmt
             },
             Token::If => self.want_if(rettype),
@@ -1462,26 +1490,30 @@ impl<'source> Parser<'source> {
     }
 
     fn process(&mut self) {
-        while !self.tmp.is_none() {
-            match self.next_token() {
+        while let Some(token) = self.ts.next() {
+            //
+            // Process file element
+            //
+
+            match token {
                 Token::Record => {
-                    let name = self.want_ident();
+                    let name = self.ts.next_ident();
                     let record = self.want_record(name.clone());
                     self.records.insert(name, record);
                 },
                 Token::Static => {
                     let vis = self.maybe_want_vis();
-                    let name = self.want_ident();
+                    let name = self.ts.next_ident();
                     // Link symbol as requested
                     self.gen.do_link(name.clone(), vis);
 
-                    let mut ty = if maybe_want!(self, Token::Colon) {
+                    let mut ty = if maybe_want!(self.ts, Token::Colon) {
                         self.want_type()
                     } else {
                         self.next_tvar()
                     };
 
-                    if maybe_want!(self, Token::Assign) {
+                    if maybe_want!(self.ts, Token::Assign) {
                         // Unify initializer type with symbol type
                         let mut expr = self.want_expr();
                         ty = self.unify(&ty, &expr.ty);
@@ -1497,11 +1529,11 @@ impl<'source> Parser<'source> {
                     // Add symbol
                     self.symtab.insert(name.clone(), Expr::make_global(ty, name));
 
-                    want!(self, Token::Semicolon);
+                    want!(self.ts, Token::Semicolon);
                 },
                 Token::Fn => {
                     let vis = self.maybe_want_vis();
-                    let name = self.want_ident();
+                    let name = self.ts.next_ident();
                     // Link symbol as requested
                     self.gen.do_link(name.clone(), vis);
 
@@ -1511,28 +1543,28 @@ impl<'source> Parser<'source> {
                     let mut param_name_ty = Vec::new();
 
                     // Read parameters
-                    want!(self, Token::LParen);
-                    while !maybe_want!(self, Token::RParen) {
+                    want!(self.ts, Token::LParen);
+                    while !maybe_want!(self.ts, Token::RParen) {
                         // Last parameter can be varargs
-                        if maybe_want!(self, Token::Varargs) {
+                        if maybe_want!(self.ts, Token::Varargs) {
                             varargs = true;
-                            want!(self, Token::RParen);
+                            want!(self.ts, Token::RParen);
                             break;
                         }
                         // Otherwise try reading a normal parameter
-                        let name = self.want_ident();
-                        want!(self, Token::Colon);
+                        let name = self.ts.next_ident();
+                        want!(self.ts, Token::Colon);
                         let ty = self.want_type();
                         params.push(ty.clone());
                         param_name_ty.push((name, ty));
-                        if !maybe_want!(self, Token::Comma) {
-                            want!(self, Token::RParen);
+                        if !maybe_want!(self.ts, Token::Comma) {
+                            want!(self.ts, Token::RParen);
                             break;
                         }
                     }
 
                     // Read return type (or set to void)
-                    let rettype = if maybe_want!(self, Token::Arrow) {
+                    let rettype = if maybe_want!(self.ts, Token::Arrow) {
                         self.want_type()
                     } else {
                         Ty::Void
@@ -1547,7 +1579,7 @@ impl<'source> Parser<'source> {
                     self.symtab.insert(name.clone(), Expr::make_global(ty, name.clone()));
 
                     // Read body (if present)
-                    if maybe_want!(self, Token::LCurly) {
+                    if maybe_want!(self.ts, Token::LCurly) {
                         self.symtab.push_scope();
 
                         // Add paramters to scope
@@ -1572,11 +1604,18 @@ impl<'source> Parser<'source> {
 
                         self.gen.do_func(name, params, stmts);
                     } else {
-                        want!(self, Token::Semicolon)
+                        want!(self.ts, Token::Semicolon)
                     }
                 },
                 _ => panic!("Expected record, union, static or function!"),
             }
+
+            //
+            // Clear file element specific data
+            //
+
+            self.tvar = 0;
+            self.tvarmap.clear();
         }
     }
 }
