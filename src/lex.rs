@@ -107,10 +107,10 @@ pub enum Token {
     Record,
     #[token("fn")]
     Fn,
-    #[token("auto")]
-    Auto,
     #[token("static")]
     Static,
+    #[token("let")]
+    Let,
 
     // Declaration markers
     #[token("export")]
@@ -204,12 +204,8 @@ pub enum Token {
     Varargs,   // variable arguments marker
 
     // Statements
-    #[token("eval")]
-    Eval,
     #[token("ret")]
     Ret,
-    #[token("set")]
-    Set,
     #[token("jmp")]
     Jmp,
     #[token("if")]

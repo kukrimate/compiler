@@ -45,10 +45,10 @@
               | <while-statement>
               | <identifier> :
               | jmp <identifier> ;
-              | auto <identifier> [: <type-declaration>] [= <expression>] ;
-              | eval <expression> ;
-              | set <expression> = <expression> ;
+              | let <identifier> [: <type-declaration>] [= <expression>] ;
               | ret [<expression>] ;
+              | <expression> ;
+              | <expression> = <expression> ;
 
 <block-statement> ::= { {<statement>}* }
 

@@ -1417,29 +1417,45 @@ impl<'a> Parser<'a> {
         Stmt::While(cond, Box::new(body))
     }
 
-    fn want_stmt(&mut self, rettype: &Ty) -> Stmt {
-        match self.ts.next_token() {
-            Token::LCurly => self.want_block(rettype),
-            Token::Eval => {
-                let stmt = Stmt::Eval(self.want_expr());
-                want!(self.ts, Token::Semicolon);
-                stmt
-            },
-            Token::Ret => {
-                let stmt = if maybe_want!(self.ts, Token::Semicolon) {
-                    // NOTE: return since we already have the semicolon
-                    return Stmt::Ret(None)
-                } else {
-                    let expr = self.want_expr();
-                    self.unify(&expr.ty, rettype);
-                    Stmt::Ret(Some(expr))
-                };
-                want!(self.ts, Token::Semicolon);
-                stmt
-            },
-            Token::Auto => {
-                let name = self.ts.next_ident();
+    fn want_eval_or_set(&mut self) -> Stmt {
+        let expr = self.want_expr();
+        let stmt = if maybe_want!(self.ts, Token::Assign) {
+            let src = self.want_expr();
+            self.unify(&expr.ty, &src.ty);
+            Stmt::Set(expr, src)
+        } else {
+            Stmt::Eval(expr)
+        };
+        want!(self.ts, Token::Semicolon);
+        stmt
+    }
 
+    fn want_stmt(&mut self, rettype: &Ty) -> Stmt {
+        match self.ts.look(0).expect("Expected statement") {
+            // Nested scope
+            Token::LCurly => {
+                self.ts.next(); // Skip {
+                self.want_block(rettype)
+            },
+
+            // Conditional
+            Token::If => {
+                self.ts.next(); // Skip if
+                self.want_if(rettype)
+            },
+
+            // While loop
+            Token::While => {
+                self.ts.next(); // Skip while
+                self.want_while(rettype)
+            },
+
+            // Statements
+            Token::Let => {
+                self.ts.next(); // Skip let
+
+                // Read declared name
+                let name = self.ts.next_ident();
                 // Read type (or create type variable)
                 let mut ty = if maybe_want!(self.ts, Token::Colon) {
                     self.want_type()
@@ -1465,27 +1481,40 @@ impl<'a> Parser<'a> {
                 want!(self.ts, Token::Semicolon);
                 stmt
             },
-            Token::Ident(s) => {
-                want!(self.ts, Token::Colon);
-                Stmt::Label(s)
-            },
-            Token::Set => {
-                let dst = self.want_expr();
-                want!(self.ts, Token::Assign);
-                let src = self.want_expr();
-                want!(self.ts, Token::Semicolon);
 
-                self.unify(&dst.ty, &src.ty);
-                Stmt::Set(dst, src)
+            Token::Ident(_) => {
+                // This could either be a label or a start of an expression,
+                // we need two tokens lookahead to tell these productions apart
+                if let Some(Token::Colon) = self.ts.look(1) {
+                    let stmt = Stmt::Label(self.ts.next_ident());   // Read label
+                    self.ts.next();                                 // Skip :
+                    stmt
+                } else {
+                    self.want_eval_or_set()
+                }
             },
+
             Token::Jmp => {
+                self.ts.next(); // Skip jmp
                 let stmt = Stmt::Jmp(self.ts.next_ident());
                 want!(self.ts, Token::Semicolon);
                 stmt
             },
-            Token::If => self.want_if(rettype),
-            Token::While => self.want_while(rettype),
-            tok => panic!("Invalid statement {:?}", tok),
+
+            Token::Ret => {
+                self.ts.next(); // Skip ret
+                if maybe_want!(self.ts, Token::Semicolon) {
+                    Stmt::Ret(None)
+                } else {
+                    let expr = self.want_expr();
+                    self.unify(&expr.ty, rettype);
+                    let stmt = Stmt::Ret(Some(expr));
+                    want!(self.ts, Token::Semicolon);
+                    stmt
+                }
+            },
+
+            _ => self.want_eval_or_set(),
         }
     }
 

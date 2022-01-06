@@ -1,28 +1,28 @@
 fn extern printf(str: *u8, ...) -> i32;
 
 fn export main() {
-    auto a;
-    auto b = 5i32;
-    auto c;
-    auto d = 1;
+    let a;
+    let b = 5i32;
+    let c;
+    let d = 1;
 
-    set c = d;
-    set b = c;
-    set a = b;
+    c = d;
+    b = c;
+    a = b;
 
-    eval printf("a = %d\n", a);
+    printf("a = %d\n", a);
 }
 
 fn f() {
-    auto arr1: [i32; 2] = [ 1, 2 ];
+    let arr1: [i32; 2] = [ 1, 2 ];
 
-    auto arr2 = [1,2,3];
-    set arr2[1] = 5i32;
+    let arr2 = [1,2,3];
+    arr2[1] = 5i32;
 }
 
 fn g() {
-    auto a;
-    auto b;
+    let a;
+    let b;
 
-    set a = a + b;
+    a = a + b;
 }

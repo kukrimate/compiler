@@ -30,7 +30,7 @@ GPLv2 only.
   * Context free languages, more specifically LL, LR grammars and shift reduce
     and recursive descent parsers
   * This compiler uses an auto generated lexical analyzer and predicitive
-    recursive-descent parser for its LL(1) grammar
+    recursive-descent parser for its LL(2) grammar
 - Compilers: Principles, Techniques, and Tools (aka the Dragon Book)
   * Notably my boolean code generator is roughly based on an algorithm from here
 - Neat C11 compiler: https://github.com/rui314/chibicc
