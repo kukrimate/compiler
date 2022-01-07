@@ -151,38 +151,28 @@ impl Ty {
 
     pub fn get_align(&self) -> usize {
         match self {
-            Ty::U8 | Ty::I8 | Ty::Bool => 1,
-            Ty::U16 => 2,
-            Ty::I16 => 2,
-            Ty::U32 => 4,
-            Ty::I32 => 4,
-            Ty::U64 => 8,
-            Ty::I64 => 8,
-            Ty::USize => 8,
-            Ty::Ptr {..} => 8,
-            Ty::Array { elem_type, .. } => elem_type.get_align(),
-            Ty::Record { align, .. } => *align,
-            Ty::Var(_) | Ty::Void | Ty::Func {..}
-                => unreachable!(),
+            // This is a crappy educational ISA and all I care
+            // about is using this for examples, thus no other
+            // types are supported on this backend ;)
+            Ty::Bool | Ty::U16 | Ty::I16 | Ty::USize | Ty::Ptr {..}
+                => 1,
+            Ty::Array { elem_type, .. }
+                => elem_type.get_align(),
+            Ty::Record { align, .. }
+                => *align,
+            _ =>
+                unreachable!(),
         }
     }
 
     pub fn get_size(&self) -> usize {
         match self {
-            Ty::Bool | Ty::U8 | Ty::I8 => 1,
-            Ty::U16 => 2,
-            Ty::I16 => 2,
-            Ty::U32 => 4,
-            Ty::I32 => 4,
-            Ty::U64 => 8,
-            Ty::I64 => 8,
-            Ty::USize => 8,
-            Ty::Ptr {..} => 8,
+            Ty::Bool | Ty::U16 | Ty::I16 | Ty::USize | Ty::Ptr {..}
+                => 1,
             Ty::Array { elem_type, elem_count }
-                => elem_type.get_size() * elem_count
-                        .expect("Array without element count allocated"),
+                => elem_type.get_size() * elem_count.expect("Array without element count allocated"),
             Ty::Record { size, .. } => *size,
-            Ty::Var(_) | Ty::Void | Ty::Func {..}
+            _
                 => unreachable!(),
         }
     }
@@ -1027,7 +1017,7 @@ impl<'a, T: Gen> Parser<'a, T> {
                 expr
             },
             Token::Str(data) => {
-                let chty = self.want_type_suffix().unwrap_or(Ty::U8);
+                let chty = self.want_type_suffix().unwrap_or(Ty::U16);
                 let (name, ty) = self.gen.do_string(chty.clone(), &*data);
                 // Replace string literal with reference to internal symbol
                 let sym_expr = Expr::make_global(ty, name);

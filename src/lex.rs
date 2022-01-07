@@ -56,7 +56,7 @@ fn hex(lex: &mut Lexer) -> usize {
 fn ch(lex: &mut Lexer) -> usize {
     // FIXME: parse escape sequences
     let mut result = 0usize;
-    for ch in lex.slice().as_bytes() {
+    for ch in lex.slice()[1..lex.slice().len() - 1].as_bytes() {
         result = result << 8 | *ch as usize;
     }
     result

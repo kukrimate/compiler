@@ -4,7 +4,8 @@
 // Code generation interface
 //
 
-pub mod nasm;
+// pub mod nasm;
+pub mod s16;
 
 use crate::ast::{Ty,Vis};
 use std::rc::Rc;
