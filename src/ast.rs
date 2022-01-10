@@ -1625,11 +1625,13 @@ impl<'a> Parser<'a> {
                         self.symtab.pop_scope();
 
                         // Generate body
-                        println!("AST: {:#?}", stmts);
-                        println!("Constraints: {:#?}", self.tvarmap);
+                        // println!("AST: {:#?}", stmts);
+                        // println!("Constraints: {:#?}", self.tvarmap);
+
                         stmts = stmts.into_iter()
                             .map(|stmt| self.finalize_stmt(stmt)).collect();
-                        println!("Deduced AST: {:#?}", stmts);
+
+                        // println!("Deduced AST: {:#?}", stmts);
 
                         self.gen.do_func(name, params, stmts);
                     } else {

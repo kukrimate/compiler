@@ -9,6 +9,36 @@ use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
 
+#[derive(Clone,Copy,PartialEq)]
+pub enum UOp {
+    Not,
+    Neg,
+}
+
+#[derive(Clone,Copy,PartialEq)]
+pub enum BOp {
+    Mul,
+    Div,
+    Rem,
+    Add,
+    Sub,
+    Lsh,
+    Rsh,
+    And,
+    Xor,
+    Or,
+}
+
+#[derive(Clone,Copy)]
+pub enum Cond {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
 //
 // Local variables
 //
@@ -137,47 +167,6 @@ fn reg_str(width: Width, reg: Reg) -> &'static str {
         Width::QWord
             => ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10",
                 "r11", "r12", "r13", "r14", "r15"][reg as usize],
-    }
-}
-
-//
-// Condition codes for comparisons
-//
-
-#[derive(Clone,Copy)]
-enum Cond {
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    Eq,
-    Ne,
-}
-
-fn cond_str(signed: bool, cond: Cond) -> &'static str {
-    match cond {
-        Cond::Lt => if signed {
-            "jl"
-        } else {
-            "jb"
-        },
-        Cond::Le => if signed {
-            "jle"
-        } else {
-            "jbe"
-        },
-        Cond::Gt => if signed {
-            "jg"
-        } else {
-            "ja"
-        },
-        Cond::Ge => if signed {
-            "jge"
-        } else {
-            "jae"
-        },
-        Cond::Eq => "je",
-        Cond::Ne => "jne",
     }
 }
 
@@ -417,73 +406,69 @@ impl Gen {
         dreg
     }
 
-    fn gen_unary(&mut self, op: &str, inner: &Expr) -> Val {
+    fn gen_unary(&mut self, op: UOp, ty: &Ty, inner: &Expr) -> Val {
         let val = self.gen_expr(inner);
-        let reg = self.gen_arith_load(Reg::Rax, &inner.ty, &val);
-        writeln!(self.code, "{} {}", op, reg).unwrap();
-
-        let tmp = self.alloc_ty(&inner.ty);
-        self.gen_store(type_width(&inner.ty), &tmp, Reg::Rax, Reg::Rbx);
+        let reg = self.gen_arith_load(Reg::Rax, ty, &val);
+        match op {
+            UOp::Not => writeln!(self.code, "not {}", reg).unwrap(),
+            UOp::Neg => writeln!(self.code, "neg {}", reg).unwrap(),
+        }
+        let tmp = self.alloc_ty(ty);
+        self.gen_store(type_width(ty), &tmp, Reg::Rax, Reg::Rbx);
         tmp
     }
 
-    fn gen_binary(&mut self, op: &str, lhs: &Expr, rhs: &Expr) -> Val {
-        // Evaluate operands
-        let lhs_val = self.gen_expr(lhs);
-        let rhs_val = self.gen_expr(rhs); // NOTE: two types must be equal
+    fn gen_binary(&mut self, op: BOp, ty: &Ty, lhs: &Expr, rhs: &Expr) -> Val {
+        // Generate expressions
+        let v1 = self.gen_expr(lhs);
+        let v2 = self.gen_expr(rhs);
+        // Load operands into registers
+        let r1 = self.gen_arith_load(Reg::Rax, ty, &v1);
+        let r2 = self.gen_arith_load(Reg::Rcx, ty, &v2);
 
-        // Do operation
-        let lhs_reg = self.gen_arith_load(Reg::Rax, &lhs.ty, &lhs_val);
-        let rhs_reg = self.gen_arith_load(Reg::Rbx, &rhs.ty, &rhs_val);
-        writeln!(self.code, "{} {}, {}", op, lhs_reg, rhs_reg).unwrap();
+        // Allocate temporary for the result
+        let tmp = self.alloc_ty(ty);
 
-        // Save result to temporary
-        let tmp = self.alloc_ty(&lhs.ty);
-        self.gen_store(type_width(&lhs.ty), &tmp, Reg::Rax, Reg::Rbx);
-        tmp
-    }
+        match op {
+            BOp::Mul => {
+                // We only care about the lower half of the result, thus
+                // we can use a two operand signed multiply everywhere
+                writeln!(self.code, "imul {}, {}", r1, r2).unwrap()
+            },
+            BOp::Div | BOp::Rem => {
+                // Clear upper half of dividend
+                writeln!(self.code, "xor edx, edx").unwrap();
+                // Choose instruction based on operand signedness
+                if ty.is_signed() {
+                    writeln!(self.code, "idiv {}", r2).unwrap();
+                } else {
+                    writeln!(self.code, "div {}", r2).unwrap();
+                }
+                // Result for remainder is handled differently
+                if op == BOp::Rem {
+                    self.gen_store(type_width(ty), &tmp, Reg::Rdx, Reg::Rbx);
+                    return tmp;
+                }
+            },
 
-    fn gen_shift(&mut self, op: &str, lhs: &Expr, rhs: &Expr) -> Val {
-        // Evaluate operands
-        let lhs_val = self.gen_expr(lhs);
-        let rhs_val = self.gen_expr(rhs);
+            // These operations are sign independent with two's completement
+            BOp::Add => writeln!(self.code, "add {}, {}", r1, r2).unwrap(),
+            BOp::Sub => writeln!(self.code, "sub {}, {}", r1, r2).unwrap(),
 
-        // Do operation
-        let lhs_reg = self.gen_arith_load(Reg::Rax, &lhs.ty, &lhs_val);
-        self.gen_arith_load(Reg::Rcx, &rhs.ty, &rhs_val);
-        writeln!(self.code, "{} {}, cl", op, lhs_reg).unwrap();
+            // The right operand can be any integer type, however it must have
+            // a positive value less-than the number of bits in the left operand
+            // otherwise this operation is undefined behavior
+            BOp::Lsh => writeln!(self.code, "shl {}, cl", r1).unwrap(),
+            BOp::Rsh => writeln!(self.code, "shr {}, cl", r1).unwrap(),
 
-        // Save result to temporary
-        let tmp = self.alloc_ty(&lhs.ty);
-        self.gen_store(type_width(&lhs.ty), &tmp, Reg::Rax, Reg::Rbx);
-        tmp
-    }
-
-    fn gen_divmod(&mut self, is_mod: bool, lhs: &Expr, rhs: &Expr) -> Val {
-        // Evaluate operands
-        let lhs_val = self.gen_expr(lhs);
-        let rhs_val = self.gen_expr(rhs);
-
-        // Do operation
-        self.gen_arith_load(Reg::Rax, &lhs.ty, &lhs_val);
-        let rhs_reg = self.gen_arith_load(Reg::Rbx, &rhs.ty, &rhs_val);
-
-        // x86 only has full-division with the upper half in dx
-        writeln!(self.code, "xor edx, edx").unwrap();
-        // Division also differs based on type
-        if lhs.ty.is_signed() {
-            writeln!(self.code, "idiv {}", rhs_reg).unwrap();
-        } else {
-            writeln!(self.code, "div {}", rhs_reg).unwrap();
+            // These operations are purely bitwise and ignore signedness
+            BOp::And => writeln!(self.code, "and {}, {}", r1, r2).unwrap(),
+            BOp::Xor => writeln!(self.code, "xor {}, {}", r1, r2).unwrap(),
+            BOp::Or  => writeln!(self.code, "or {}, {}", r1, r2).unwrap(),
         }
 
         // Save result to temporary
-        let tmp = self.alloc_ty(&lhs.ty);
-        if is_mod { // Remainder in DX
-            self.gen_store(type_width(&lhs.ty), &tmp, Reg::Rdx, Reg::Rbx);
-        } else {    // Quotient in AX
-            self.gen_store(type_width(&lhs.ty), &tmp, Reg::Rax, Reg::Rbx);
-        }
+        self.gen_store(type_width(ty), &tmp, Reg::Rax, Reg::Rbx);
         tmp
     }
 
@@ -507,24 +492,6 @@ impl Gen {
                 => Val::Glo(name.clone(), 0),
             ExprKind::Local(local)
                 => local.any_val(),
-
-            // Prefix expressions
-            ExprKind::Ref(inner) => {
-                // Save address to rax
-                let val = self.gen_expr(&*inner);
-                self.gen_lea(Reg::Rax, &val);
-                // Save pointer to temporary
-                let tmp = self.alloc_ty(&expr.ty);
-                self.gen_store(type_width(&expr.ty), &tmp, Reg::Rax, Reg::Rbx);
-                tmp
-            },
-            ExprKind::Deref(inner) =>
-                Val::Deref(Box::new(self.gen_expr(&*inner)), 0),
-
-            ExprKind::Not(expr)
-                => self.gen_unary("not", &*expr),
-            ExprKind::Neg(expr)
-                => self.gen_unary("neg", &*expr),
 
             // Postfix expressions
             ExprKind::Field(inner, off)
@@ -590,27 +557,44 @@ impl Gen {
                 }
             },
 
+            // Prefix expressions
+            ExprKind::Ref(inner) => {
+                // Save address to rax
+                let val = self.gen_expr(&*inner);
+                self.gen_lea(Reg::Rax, &val);
+                // Save pointer to temporary
+                let tmp = self.alloc_ty(&expr.ty);
+                self.gen_store(type_width(&expr.ty), &tmp, Reg::Rax, Reg::Rbx);
+                tmp
+            },
+            ExprKind::Deref(inner) =>
+                Val::Deref(Box::new(self.gen_expr(&*inner)), 0),
+            ExprKind::Not(inner)
+                => self.gen_unary(UOp::Not, &expr.ty, &*inner),
+            ExprKind::Neg(inner)
+                => self.gen_unary(UOp::Neg, &expr.ty, &*inner),
+
             // Binary operations
-            ExprKind::Add(lhs, rhs)
-                => self.gen_binary("add", &*lhs, &*rhs),
-            ExprKind::Sub(lhs, rhs)
-                => self.gen_binary("sub", &*lhs, &*rhs),
             ExprKind::Mul(lhs, rhs)
-                => self.gen_binary("imul", &*lhs, &*rhs),
+                => self.gen_binary(BOp::Mul, &expr.ty, &*lhs, &*rhs),
             ExprKind::Div(lhs, rhs)
-                => self.gen_divmod(false, &*lhs, &*rhs),
+                => self.gen_binary(BOp::Div, &expr.ty, &*lhs, &*rhs),
             ExprKind::Rem(lhs, rhs)
-                => self.gen_divmod(true, &*lhs, &*rhs),
-            ExprKind::Or(lhs, rhs)
-                => self.gen_binary("or", &*lhs, &*rhs),
-            ExprKind::And(lhs, rhs)
-                => self.gen_binary("and", &*lhs, &*rhs),
-            ExprKind::Xor(lhs, rhs)
-                => self.gen_binary("xor", &*lhs, &*rhs),
+                => self.gen_binary(BOp::Rem, &expr.ty, &*lhs, &*rhs),
+            ExprKind::Add(lhs, rhs)
+                => self.gen_binary(BOp::Add, &expr.ty, &*lhs, &*rhs),
+            ExprKind::Sub(lhs, rhs)
+                => self.gen_binary(BOp::Sub, &expr.ty, &*lhs, &*rhs),
             ExprKind::Lsh(lhs, rhs)
-                => self.gen_shift("shl", &*lhs, &*rhs),
+                => self.gen_binary(BOp::Lsh, &expr.ty, &*lhs, &*rhs),
             ExprKind::Rsh(lhs, rhs)
-                => self.gen_shift("shr", &*lhs, &*rhs),
+                => self.gen_binary(BOp::Rsh, &expr.ty, &*lhs, &*rhs),
+            ExprKind::And(lhs, rhs)
+                => self.gen_binary(BOp::And, &expr.ty, &*lhs, &*rhs),
+            ExprKind::Xor(lhs, rhs)
+                => self.gen_binary(BOp::Xor, &expr.ty, &*lhs, &*rhs),
+            ExprKind::Or(lhs, rhs)
+                => self.gen_binary(BOp::Or, &expr.ty, &*lhs, &*rhs),
 
             // Boolean expressions
             ExprKind::LNot(_) |
@@ -649,16 +633,43 @@ impl Gen {
         }
     }
 
-    fn gen_jcc(&mut self, cond: Cond, label: usize, lhs: &Expr, rhs: &Expr) {
-        let lhs_val = self.gen_expr(lhs);
-        let rhs_val = self.gen_expr(rhs);
+    fn gen_jcc(&mut self, cond: Cond, ltrue: usize, lfalse: usize, ty: &Ty, lhs: &Expr, rhs: &Expr) {
+        // Generate expressions
+        let v1 = self.gen_expr(lhs);
+        let v2 = self.gen_expr(rhs);
+        // Load values to registers
+        let r1 = self.gen_arith_load(Reg::Rax, ty, &v1);
+        let r2 = self.gen_arith_load(Reg::Rbx, ty, &v2);
 
-        let lhs_reg = self.gen_arith_load(Reg::Rax, &lhs.ty, &lhs_val);
-        let rhs_reg = self.gen_arith_load(Reg::Rbx, &rhs.ty, &rhs_val);
-
-        writeln!(self.code, "cmp {}, {}\n{} .{}", lhs_reg, rhs_reg,
-            cond_str(lhs.ty.is_signed(), cond), label).unwrap();
-
+        // Generate compare
+        writeln!(self.code, "cmp {}, {}", r1, r2).unwrap();
+        // Generate conditional jump to true case
+        match cond {
+            Cond::Lt => if ty.is_signed() {
+                writeln!(self.code, "jl .{}", ltrue).unwrap();
+            } else {
+                writeln!(self.code, "jb .{}", ltrue).unwrap();
+            },
+            Cond::Le => if ty.is_signed() {
+                writeln!(self.code, "jle .{}", ltrue).unwrap();
+            } else {
+                writeln!(self.code, "jbe .{}", ltrue).unwrap();
+            },
+            Cond::Gt => if ty.is_signed() {
+                writeln!(self.code, "jg .{}", ltrue).unwrap();
+            } else {
+                writeln!(self.code, "ja .{}", ltrue).unwrap();
+            },
+            Cond::Ge => if ty.is_signed() {
+                writeln!(self.code, "jge .{}", ltrue).unwrap();
+            } else {
+                writeln!(self.code, "jae .{}", ltrue).unwrap();
+            },
+            Cond::Eq => writeln!(self.code, "je .{}", ltrue).unwrap(),
+            Cond::Ne => writeln!(self.code, "jne .{}", ltrue).unwrap(),
+        }
+        // Generate unconditional jump to false case
+        writeln!(self.code, "jmp .{}", lfalse).unwrap();
     }
 
     fn gen_bool_expr(&mut self, expr: &Expr, ltrue: usize, lfalse: usize) {
@@ -666,30 +677,18 @@ impl Gen {
             ExprKind::LNot(inner)
                 => self.gen_bool_expr(&*inner, lfalse, ltrue),
 
-            ExprKind::Lt(lhs, rhs) => {
-                self.gen_jcc(Cond::Lt, ltrue, &*lhs, &*rhs);
-                writeln!(self.code, "jmp .{}", lfalse).unwrap();
-            },
-            ExprKind::Le(lhs, rhs) => {
-                self.gen_jcc(Cond::Le, ltrue, &*lhs, &*rhs);
-                writeln!(self.code, "jmp .{}", lfalse).unwrap();
-            },
-            ExprKind::Gt(lhs, rhs) => {
-                self.gen_jcc(Cond::Gt, ltrue, &*lhs, &*rhs);
-                writeln!(self.code, "jmp .{}", lfalse).unwrap();
-            },
-            ExprKind::Ge(lhs, rhs) => {
-                self.gen_jcc(Cond::Ge, ltrue, &*lhs, &*rhs);
-                writeln!(self.code, "jmp .{}", lfalse).unwrap();
-            },
-            ExprKind::Eq(lhs, rhs) => {
-                self.gen_jcc(Cond::Eq, ltrue, &*lhs, &*rhs);
-                writeln!(self.code, "jmp .{}", lfalse).unwrap();
-            },
-            ExprKind::Ne(lhs, rhs) => {
-                self.gen_jcc(Cond::Ne, ltrue, &*lhs, &*rhs);
-                writeln!(self.code, "jmp .{}", lfalse).unwrap();
-            },
+            ExprKind::Lt(lhs, rhs) =>
+                self.gen_jcc(Cond::Lt, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
+            ExprKind::Le(lhs, rhs) =>
+                self.gen_jcc(Cond::Le, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
+            ExprKind::Gt(lhs, rhs) =>
+                self.gen_jcc(Cond::Gt, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
+            ExprKind::Ge(lhs, rhs) =>
+                self.gen_jcc(Cond::Ge, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
+            ExprKind::Eq(lhs, rhs) =>
+                self.gen_jcc(Cond::Eq, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
+            ExprKind::Ne(lhs, rhs) =>
+                self.gen_jcc(Cond::Ne, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
             ExprKind::LAnd(lhs, rhs) => {
                 let lmid = self.next_label();
                 self.gen_bool_expr(&*lhs, lmid, lfalse);
