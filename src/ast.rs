@@ -1228,7 +1228,7 @@ impl<'a> Parser<'a> {
     fn want_lor(&mut self) -> Expr {
         let mut expr = self.want_land();
         loop {
-            if maybe_want!(self.ts, Token::LAnd) {
+            if maybe_want!(self.ts, Token::LOr) {
                 let expr2 = self.want_land();
                 expr = self.make_lor(expr, expr2);
             } else {
