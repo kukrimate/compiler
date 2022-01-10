@@ -176,7 +176,6 @@ fn reg_str(width: Width, reg: Reg) -> &'static str {
 
 #[derive(Clone,Debug,Hash,PartialEq,Eq)]
 pub enum Val {
-    Void,                     // Non-existent value
     Imm(usize),               // Immediate constant
     Loc(usize),               // Reference to stack
     Glo(Rc<str>, usize),      // Reference to symbol
@@ -186,7 +185,7 @@ pub enum Val {
 impl Val {
     fn with_offset(self, add: usize) -> Val {
         match self {
-            Val::Void | Val::Imm(_) => unreachable!(),
+            Val::Imm(_) => unreachable!(),
             Val::Loc(offset) => Val::Loc(offset + add),
             Val::Glo(name, offset) => Val::Glo(name, offset + add),
             Val::Deref(ptr, offset) => Val::Deref(ptr, offset + add),
@@ -314,7 +313,7 @@ impl Gen {
     fn gen_lea(&mut self, reg: Reg, val: &Val) {
         let dreg = reg_str(Width::QWord, reg);
         match val {
-            Val::Void | Val::Imm(_) => unreachable!(),
+            Val::Imm(_) => unreachable!(),
             Val::Loc(offset) => writeln!(self.code, "lea {}, [rsp + {}]", dreg, offset).unwrap(),
             Val::Glo(name, offset) => writeln!(self.code, "lea {}, [{} + {}]", dreg, name, offset).unwrap(),
             Val::Deref(ptr, offset) => {
@@ -330,7 +329,6 @@ impl Gen {
     fn gen_load(&mut self, width: Width, reg: Reg, val: &Val) {
         let dreg = reg_str(width, reg);
         match val {
-            Val::Void => unreachable!(),
             Val::Imm(val) => writeln!(self.code, "mov {}, {}", dreg, val).unwrap(),
             Val::Loc(offset) => writeln!(self.code, "mov {}, [rsp + {}]", dreg, offset).unwrap(),
             Val::Glo(name, offset) => writeln!(self.code, "mov {}, [{} + {}]", dreg, name, offset).unwrap(),
@@ -345,7 +343,7 @@ impl Gen {
     fn gen_store(&mut self, width: Width, val: &Val, reg: Reg, tmp_reg: Reg) {
         let sreg = reg_str(width, reg);
         match val {
-            Val::Void | Val::Imm(_) => unreachable!(),
+            Val::Imm(_) => unreachable!(),
             Val::Loc(offset) => writeln!(self.code, "mov [rsp + {}], {}", offset, sreg).unwrap(),
             Val::Glo(name, offset) => writeln!(self.code, "mov [{} + {}], {}", name, offset, sreg).unwrap(),
             Val::Deref(ptr, offset) => {
@@ -375,6 +373,35 @@ impl Gen {
         }
     }
 
+    fn gen_call(&mut self, func: &Expr, args: &Vec<Expr>, varargs: bool) {
+        // Evaluate called expression
+        let func_val = self.gen_expr(&*func);
+
+        // Move arguments to registers
+        // FIXME: more than 6 arguments
+        for (arg, reg) in args.iter().zip(PARAMS) {
+            let arg_val = self.gen_expr(arg);
+            self.gen_load(type_width(&arg.ty), reg, &arg_val);
+        }
+
+        if varargs {
+            // Number of vector arguments needs to be provided to varargs
+            // function by the ABI
+            writeln!(self.code, "xor eax, eax").unwrap();
+        }
+
+        // Generate call
+        match func_val {
+            Val::Glo(name, offset) if offset == 0 => {
+                writeln!(self.code, "call {}", name).unwrap();
+            },
+            _ => {
+                self.gen_lea(Reg::Rbx, &func_val);
+                writeln!(self.code, "call rbx").unwrap();
+            },
+        }
+    }
+
     // Load an arithmetic value
     fn gen_arith_load(&mut self, reg: Reg, ty: &Ty, val: &Val) -> &'static str {
         // Which instruction do we need, and what width do we extend to?
@@ -390,7 +417,6 @@ impl Gen {
             _ => panic!("Expected arithmetic type"),
         };
         match val {
-            Val::Void => unreachable!(),
             Val::Imm(val)
                 => writeln!(self.code, "mov {}, {}", dreg, val).unwrap(),
             Val::Loc(offset)
@@ -521,40 +547,14 @@ impl Gen {
                     Val::Deref(Box::new(tmp), 0)
                 }
             },
-            ExprKind::Call(func, args) => {
-                // Evaluate called expression
-                let func_val = self.gen_expr(&*func);
+            ExprKind::Call(func, args, varargs) => {
+                // Generate call
+                self.gen_call(func, args, *varargs);
 
-                // Move arguments to registers
-                // FIXME: more than 6 arguments
-                for (arg, reg) in args.iter().zip(PARAMS) {
-                    let arg_val = self.gen_expr(arg);
-                    self.gen_load(type_width(&arg.ty), reg, &arg_val);
-                }
-
-                // Move function address to rax
-                self.gen_lea(Reg::Rbx, &func_val);
-
-                // Verify type is actually a function
-                if let Ty::Func { varargs, rettype, .. } = &func.ty {
-                    // Generate call
-                    if *varargs {
-                        writeln!(self.code, "xor eax, eax").unwrap();
-                    }
-                    writeln!(self.code, "call rbx").unwrap();
-
-                    if let Ty::Void = &**rettype {
-                        // Create unusable value for precude
-                        Val::Void
-                    } else {
-                        // Otherwise move returned value to temporary
-                        let tmp = self.alloc_ty(&rettype);
-                        self.gen_store(type_width(&rettype), &tmp, Reg::Rax, Reg::Rbx);
-                        tmp
-                    }
-                } else {
-                    panic!("Non-function object called")
-                }
+                // Move return value to temporary
+                let tmp = self.alloc_ty(&expr.ty);
+                self.gen_store(type_width(&expr.ty), &tmp, Reg::Rax, Reg::Rbx);
+                tmp
             },
 
             // Prefix expressions
@@ -706,8 +706,78 @@ impl Gen {
                 let val = self.gen_expr(expr);
                 self.gen_load(Width::Byte, Reg::Rax, &val);
                 writeln!(self.code, "test al, al").unwrap();
-                writeln!(self.code, "jnz .{}\njmp .{}", ltrue, lfalse).unwrap();
+                writeln!(self.code, "jnz .{}", ltrue).unwrap();
+                writeln!(self.code, "jmp .{}", lfalse).unwrap();
             },
+        }
+    }
+
+    // Generate an expression for side effects
+    fn gen_eval_expr(&mut self, expr: &Expr) {
+        match &expr.kind {
+            // Constant value
+            ExprKind::Const(_) => (),
+            // Compound literals
+            ExprKind::Compound(exprs) => {
+                for expr in exprs.iter() {
+                    self.gen_eval_expr(expr);
+                }
+            },
+            // Reference to symbol
+            ExprKind::Global(_) => (),
+            ExprKind::Local(_) => (),
+
+            // Postfix expressions
+            ExprKind::Field(inner, _)
+                => self.gen_eval_expr(&*inner),
+            ExprKind::Elem(array, index)
+                => {
+                    self.gen_eval_expr(&*array);
+                    self.gen_eval_expr(&*index);
+                },
+            ExprKind::Call(func, args, varargs)
+                => self.gen_call(&*func, args, *varargs),
+
+            // Prefix expressions
+            ExprKind::Ref(inner) |
+            ExprKind::Deref(inner) |
+            ExprKind::Not(inner) |
+            ExprKind::Neg(inner)
+                => self.gen_eval_expr(&*inner),
+
+            // Binary operations
+            ExprKind::Mul(lhs, rhs) |
+            ExprKind::Div(lhs, rhs) |
+            ExprKind::Rem(lhs, rhs) |
+            ExprKind::Add(lhs, rhs) |
+            ExprKind::Sub(lhs, rhs) |
+            ExprKind::Lsh(lhs, rhs) |
+            ExprKind::Rsh(lhs, rhs) |
+            ExprKind::And(lhs, rhs) |
+            ExprKind::Xor(lhs, rhs) |
+            ExprKind::Or(lhs, rhs)
+                => {
+                    self.gen_eval_expr(&*lhs);
+                    self.gen_eval_expr(&*rhs);
+                }
+
+            // Boolean expressions
+            ExprKind::LNot(_) |
+            ExprKind::Lt(_, _) |
+            ExprKind::Le(_, _) |
+            ExprKind::Gt(_, _) |
+            ExprKind::Ge(_, _) |
+            ExprKind::Eq(_, _) |
+            ExprKind::Ne(_, _) |
+            ExprKind::LAnd(_, _) |
+            ExprKind::LOr(_, _) => {
+                let lend = self.next_label();
+                self.gen_bool_expr(expr, lend, lend);
+                writeln!(self.code, ".{}:", lend).unwrap();
+            },
+
+            // Cast
+            ExprKind::Cast(inner) => self.gen_eval_expr(&*inner),
         }
     }
 
@@ -717,7 +787,7 @@ impl Gen {
                 self.gen_stmts(stmts);
             },
             Stmt::Eval(expr) => {
-                self.gen_expr(expr);
+                self.gen_eval_expr(expr);
             },
             Stmt::Ret(opt_expr) => {
                 // Evaluate return value if present

@@ -202,7 +202,7 @@ pub enum ExprKind {
     Local(Rc<Local>),
     // Postfix expressions
     Field(Box<Expr>, usize),
-    Call(Box<Expr>, Vec<Expr>),
+    Call(Box<Expr>, Vec<Expr>, bool),
     Elem(Box<Expr>, Box<Expr>),
     // Prefix expressions
     Ref(Box<Expr>),
@@ -535,7 +535,7 @@ impl<'a> Parser<'a> {
 
             Expr {
                 ty: *rettype.clone(),
-                kind: ExprKind::Call(Box::new(func), args)
+                kind: ExprKind::Call(Box::new(func), args, varargs)
             }
         } else {
             panic!("() operator on non-function type");
@@ -769,9 +769,10 @@ impl<'a> Parser<'a> {
 
             ExprKind::Field(record, off)
                 => ExprKind::Field(Box::new(self.finalize_expr(*record)), off),
-            ExprKind::Call(func, args)
+            ExprKind::Call(func, args, varargs)
                 => ExprKind::Call(Box::new(self.finalize_expr(*func)),
-                    args.into_iter().map(|expr| self.finalize_expr(expr)).collect()),
+                    args.into_iter().map(|expr| self.finalize_expr(expr)).collect(),
+                    varargs),
             ExprKind::Elem(array, index)
                 => ExprKind::Elem(
                     Box::new(self.finalize_expr(*array)),
