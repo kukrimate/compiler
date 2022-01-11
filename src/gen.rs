@@ -193,99 +193,19 @@ impl Val {
     }
 }
 
-//
-// Code generator implementation
-//
-
-pub struct Gen {
-    // Current function
+struct FuncGen {
     frame_size: usize,
     label_no: usize,
     code: String,
-    // Linkage table
-    linkage: Vec<(Rc<str>, Vis)>,
-    // String literal index
-    str_no: usize,
-    // Sections
-    text: String,
-    rodata: String,
-    data: String,
-    bss: String,
 }
 
-impl Gen {
-    pub fn new() -> Gen {
-        Gen {
-            // Function
+impl FuncGen {
+    fn new() -> FuncGen {
+        FuncGen {
             frame_size: 0,
             label_no: 0,
             code: String::new(),
-            // Global
-            linkage: Vec::new(),
-            str_no: 0,
-            text: String::new(),
-            rodata: String::new(),
-            data: String::new(),
-            bss: String::new(),
         }
-    }
-
-    pub fn do_link(&mut self, name: Rc<str>, vis: Vis) {
-        self.linkage.push((name, vis));
-    }
-
-    pub fn do_string(&mut self, chty: Ty, data: &str) -> (Rc<str>, Ty) {
-        // Create assembly symbol
-        let name: Rc<str> = format!("str${}", self.str_no).into();
-        self.str_no += 1;
-        // Generate data
-        write!(self.rodata, "{} db ", name).unwrap();
-        for byte in data.bytes() {
-            write!(self.rodata, "0x{:02x}, ", byte).unwrap();
-        }
-        writeln!(self.rodata, "0").unwrap();
-        // Insert symbol
-        let ty = Ty::Array {
-            elem_type: Box::new(chty),
-            elem_count: Some(data.len())
-        };
-        (name, ty)
-    }
-
-    fn gen_static_init(&mut self, expr: &Expr) {
-        match &expr.kind {
-            ExprKind::Const(val) => {
-                // Write constant to data section
-                // FIXME: align data
-                writeln!(self.data, "{} {}", data_str(type_width(&expr.ty)), val).unwrap();
-            },
-            ExprKind::Compound(exprs) => {
-                for expr in exprs.iter() {
-                    self.gen_static_init(expr);
-                }
-            },
-            ExprKind::Ref(expr) => {
-                if let ExprKind::Global(name) = &expr.kind {
-                    writeln!(self.data, "dq {}", name).unwrap();
-                } else {
-                    panic!("Expected constant expression")
-                }
-            },
-            _ => panic!("Expected constant expression"),
-        }
-    }
-
-    pub fn do_data(&mut self, name: &Rc<str>, expr: &Expr) {
-        // Generate heading
-        writeln!(self.data, "{}:", name).unwrap();
-        // Generate data
-        self.gen_static_init(expr);
-    }
-
-    pub fn do_bss(&mut self, name: &Rc<str>, ty: &Ty) {
-        // Allocate bss entry
-        // FIXME: align .bss entry
-        writeln!(self.bss, "{} resb {}", name, ty.get_size()).unwrap();
     }
 
     fn stack_alloc(&mut self, size: usize) -> usize {
@@ -866,33 +786,124 @@ impl Gen {
         }
     }
 
-    pub fn do_func(&mut self, name: Rc<str>, params: Vec<(Ty, Rc<Local>)>, stmts: Vec<Stmt>) {
-        // Reset function specific fields
-        self.frame_size = 0;
-        self.label_no = 0;
-        self.code.clear();
-
-        // Generate heading
-        writeln!(self.text, "{}:", name).unwrap();
-
+    fn gen_params(&mut self, params: &Vec<(Ty, Rc<Local>)>) {
         // Copy the parameters into locals
         // FIXME: this doesn't take into account most of the SysV ABI
-        for (i, (ty, local)) in params.into_iter().enumerate() {
-            let val = self.alloc_ty(&ty);
+        for (i, (ty, local)) in params.iter().enumerate() {
+            let val = self.alloc_ty(ty);
             // Copy parameter to local variable
-            self.gen_store(type_width(&ty), &val, PARAMS[i], Reg::Rbx);
+            self.gen_store(type_width(ty), &val, PARAMS[i], Reg::Rbx);
             // Add local variable to parameter symbol
             local.add_val(val);
         }
+    }
+}
 
+pub struct Gen {
+    // Linkage table
+    linkage: Vec<(Rc<str>, Vis)>,
+    // String literal index
+    str_no: usize,
+    // Sections
+    text: String,
+    rodata: String,
+    data: String,
+    bss: String,
+}
+
+impl Gen {
+    pub fn new() -> Gen {
+        Gen {
+            // Global
+            linkage: Vec::new(),
+            str_no: 0,
+            text: String::new(),
+            rodata: String::new(),
+            data: String::new(),
+            bss: String::new(),
+        }
+    }
+
+    pub fn do_link(&mut self, name: Rc<str>, vis: Vis) {
+        self.linkage.push((name, vis));
+    }
+
+    pub fn do_string(&mut self, chty: Ty, data: &str) -> (Rc<str>, Ty) {
+        // Create assembly symbol
+        let name: Rc<str> = format!("str${}", self.str_no).into();
+        self.str_no += 1;
+        // Generate data
+        write!(self.rodata, "{} db ", name).unwrap();
+        for byte in data.bytes() {
+            write!(self.rodata, "0x{:02x}, ", byte).unwrap();
+        }
+        writeln!(self.rodata, "0").unwrap();
+        // Insert symbol
+        let ty = Ty::Array {
+            elem_type: Box::new(chty),
+            elem_count: Some(data.len())
+        };
+        (name, ty)
+    }
+
+    fn gen_static_init(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Const(val) => {
+                // Write constant to data section
+                // FIXME: align data
+                writeln!(self.data, "{} {}", data_str(type_width(&expr.ty)), val).unwrap();
+            },
+            ExprKind::Compound(exprs) => {
+                for expr in exprs.iter() {
+                    self.gen_static_init(expr);
+                }
+            },
+            ExprKind::Ref(expr) => {
+                if let ExprKind::Global(name) = &expr.kind {
+                    writeln!(self.data, "dq {}", name).unwrap();
+                } else {
+                    panic!("Expected constant expression")
+                }
+            },
+            _ => panic!("Expected constant expression"),
+        }
+    }
+
+    pub fn do_data(&mut self, name: &Rc<str>, expr: &Expr) {
+        // Generate heading
+        writeln!(self.data, "{}:", name).unwrap();
+        // Generate data
+        self.gen_static_init(expr);
+    }
+
+    pub fn do_bss(&mut self, name: &Rc<str>, ty: &Ty) {
+        // Allocate bss entry
+        // FIXME: align .bss entry
+        writeln!(self.bss, "{} resb {}", name, ty.get_size()).unwrap();
+    }
+
+    pub fn do_func(&mut self, name: Rc<str>, params: Vec<(Ty, Rc<Local>)>, stmts: Vec<Stmt>) {
+        // Setup function generation context
+        let mut func_gen = FuncGen::new();
+
+        // Generate parameters
+        func_gen.gen_params(&params);
         // Generate statements
-        self.gen_stmts(&stmts);
+        func_gen.gen_stmts(&stmts);
 
-        // Round stack frame
-        self.frame_size = (self.frame_size + 15) / 16 * 16;
-        // Generate code
-        writeln!(self.text, "push rbp\nmov rbp, rsp\nsub rsp, {}\n{}.$done:\nleave\nret",
-            self.frame_size, self.code).unwrap();
+        // Calculate rounded stack frame size
+        let frame_size = (func_gen.frame_size + 15) / 16 * 16;
+
+        // Generate final assembly
+        writeln!(self.text,
+            "{}:\n\
+            push rbp\n\
+            mov rbp, rsp\n\
+            sub rsp, {}\n\
+            {}\n\
+            .$done:\n\
+            leave\n\
+            ret", name, frame_size, func_gen.code).unwrap();
     }
 
     pub fn finalize<T: std::io::Write>(&self, output: &mut T) {
