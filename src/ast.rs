@@ -7,60 +7,9 @@
 use crate::lex::{Lexer,Token};
 use crate::gen::Gen;
 use crate::gen::Local;
-use std::collections::{HashMap,VecDeque};
+use crate::util::PeekIter;
+use std::collections::HashMap;
 use std::rc::Rc;
-
-//
-// Wrapper around the lexical analyzer for supporting lookahead
-//
-
-struct TokenStream<'a> {
-    lexer: &'a mut Lexer<'a>,
-    queue: VecDeque<Token>,
-}
-
-impl<'a> TokenStream<'a> {
-    fn new(lexer: &'a mut Lexer<'a>) -> Self {
-        TokenStream {
-            lexer: lexer,
-            queue: VecDeque::new(),
-        }
-    }
-
-    // Lookahead at the ith token in the stream
-    fn look(&mut self, i: usize) -> Option<&Token> {
-        // Make sure we have at least i+1 tokens queued
-        // Bail if the lexer runs out of tokens during this
-        while i >= self.queue.len() {
-            self.queue.push_back(self.lexer.next()?)
-        }
-        // Here we know we can return a reference to the ith token
-        self.queue.get(i)
-    }
-
-    // Read the next token from the stream
-    fn next(&mut self) -> Option<Token> {
-        if let some @ Some(_) = self.queue.pop_front() {
-            some
-        } else {
-            self.lexer.next()
-        }
-    }
-
-    // Read the next token
-    fn next_token(&mut self) -> Token {
-        self.next().expect("Expected token")
-    }
-
-    // Read an identifier
-    fn next_ident(&mut self) -> Rc<str> {
-        match self.next() {
-            Some(Token::Ident(val)) => val,
-            got => panic!("Expected identifier, got {:?}", got),
-        }
-    }
-
-}
 
 macro_rules! want {
     ($self:expr, $want:path) => {
@@ -73,7 +22,7 @@ macro_rules! want {
 
 macro_rules! maybe_want {
     ($self:expr, $want:pat) => {
-        match $self.look(0) {
+        match $self.peek(0) {
             Some($want) => {
                 $self.next();
                 true
@@ -82,7 +31,6 @@ macro_rules! maybe_want {
         }
     }
 }
-
 
 //
 // Type expressions
@@ -334,8 +282,7 @@ impl SymTab {
 //
 
 struct Parser<'a> {
-    // Lexer and temorary token
-    ts: TokenStream<'a>,
+    ts: PeekIter<Lexer<'a>, 2>,
     // Code generation backend
     gen: &'a mut Gen,
     // Currently defined record types
@@ -349,14 +296,22 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(lexer: &'a mut Lexer<'a>, gen: &'a mut Gen) -> Self {
+    fn new(lexer: Lexer<'a>, gen: &'a mut Gen) -> Self {
         Parser {
-            ts: TokenStream::new(lexer),
+            ts: PeekIter::new(lexer),
             gen: gen,
             records: HashMap::new(),
             symtab: SymTab::new(),
             tvar: 0,
             tvarmap: HashMap::new(),
+        }
+    }
+
+    // Read an identifier
+    fn next_ident(&mut self) -> Rc<str> {
+        match self.ts.next() {
+            Some(Token::Ident(val)) => val,
+            got => panic!("Expected identifier, got {:?}", got),
         }
     }
 
@@ -907,7 +862,7 @@ impl<'a> Parser<'a> {
     // Read an integer type (or return None)
     fn want_type_suffix(&mut self) -> Option<Ty> {
         // Match for type suffix
-        let suf = match self.ts.look(0) {
+        let suf = match self.ts.peek(0) {
             Some(Token::U8)   => Ty::U8,
             Some(Token::I8)   => Ty::I8,
             Some(Token::U16)  => Ty::U16,
@@ -965,7 +920,7 @@ impl<'a> Parser<'a> {
         let mut expr_map = HashMap::new();
         while !maybe_want!(self.ts, Token::RCurly) {
             // Read field name
-            let name = self.ts.next_ident();
+            let name = self.next_ident();
 
             // Check for duplicate field
             if let Some(_) = expr_map.get(&name) {
@@ -1007,7 +962,7 @@ impl<'a> Parser<'a> {
     }
 
     fn want_primary(&mut self) -> Expr {
-        match self.ts.next_token() {
+        match self.ts.next().expect("Expected primary expression") {
             Token::LParen => {
                 let expr = self.want_expr();
                 want!(self.ts, Token::RParen);
@@ -1043,7 +998,8 @@ impl<'a> Parser<'a> {
             },
             Token::True => Expr::make_const(Ty::Bool, 1),
             Token::False => Expr::make_const(Ty::Bool, 0),
-            _ => panic!("Invalid constant value!"),
+
+            tok => panic!("Invalid primary expression {:?}", tok),
         }
     }
 
@@ -1051,7 +1007,7 @@ impl<'a> Parser<'a> {
         let mut expr = self.want_primary();
         loop {
             if maybe_want!(self.ts, Token::Dot) {
-                let name = self.ts.next_ident();
+                let name = self.next_ident();
                 expr = self.make_field(expr, name);
             } else if maybe_want!(self.ts, Token::LParen) {
                 let mut args = Vec::new();
@@ -1243,7 +1199,7 @@ impl<'a> Parser<'a> {
     }
 
     fn want_type(&mut self) -> Ty {
-        match self.ts.next_token() {
+        match self.ts.next().expect("Expected type") {
             Token::Bool => Ty::Bool,
             Token::U8   => Ty::U8,
             Token::I8   => Ty::I8,
@@ -1329,7 +1285,7 @@ impl<'a> Parser<'a> {
 
         // Read fields until }
         while !maybe_want!(self.ts, Token::RCurly) {
-            lookup.insert(self.ts.next_ident(), fields.len());
+            lookup.insert(self.next_ident(), fields.len());
             want!(self.ts, Token::Colon);
 
             let field_type = self.want_type();
@@ -1393,11 +1349,12 @@ impl<'a> Parser<'a> {
 
         // Read else branch if present
         let _else = if maybe_want!(self.ts, Token::Else) {
-            Some(Box::new(match self.ts.next_token() {
-                Token::LCurly => self.want_block(rettype),
-                Token::If => self.want_if(rettype),
-                _ => panic!("Expected block or if after else")
-            }))
+            let else_body = match self.ts.next() {
+                Some(Token::LCurly) => self.want_block(rettype),
+                Some(Token::If)     => self.want_if(rettype),
+                _                   => panic!("Expected block or if after else")
+            };
+            Some(Box::new(else_body))
         } else {
             None
         };
@@ -1432,7 +1389,7 @@ impl<'a> Parser<'a> {
     }
 
     fn want_stmt(&mut self, rettype: &Ty) -> Stmt {
-        match self.ts.look(0).expect("Expected statement") {
+        match self.ts.peek(0).expect("Expected statement") {
             // Nested scope
             Token::LCurly => {
                 self.ts.next(); // Skip {
@@ -1456,7 +1413,7 @@ impl<'a> Parser<'a> {
                 self.ts.next(); // Skip let
 
                 // Read declared name
-                let name = self.ts.next_ident();
+                let name = self.next_ident();
                 // Read type (or create type variable)
                 let mut ty = if maybe_want!(self.ts, Token::Colon) {
                     self.want_type()
@@ -1486,8 +1443,8 @@ impl<'a> Parser<'a> {
             Token::Ident(_) => {
                 // This could either be a label or a start of an expression,
                 // we need two tokens lookahead to tell these productions apart
-                if let Some(Token::Colon) = self.ts.look(1) {
-                    let stmt = Stmt::Label(self.ts.next_ident());   // Read label
+                if let Some(Token::Colon) = self.ts.peek(1) {
+                    let stmt = Stmt::Label(self.next_ident());   // Read label
                     self.ts.next();                                 // Skip :
                     stmt
                 } else {
@@ -1497,7 +1454,7 @@ impl<'a> Parser<'a> {
 
             Token::Jmp => {
                 self.ts.next(); // Skip jmp
-                let stmt = Stmt::Jmp(self.ts.next_ident());
+                let stmt = Stmt::Jmp(self.next_ident());
                 want!(self.ts, Token::Semicolon);
                 stmt
             },
@@ -1527,13 +1484,13 @@ impl<'a> Parser<'a> {
 
             match token {
                 Token::Record => {
-                    let name = self.ts.next_ident();
+                    let name = self.next_ident();
                     let record = self.want_record(name.clone());
                     self.records.insert(name, record);
                 },
                 Token::Static => {
                     let vis = self.maybe_want_vis();
-                    let name = self.ts.next_ident();
+                    let name = self.next_ident();
                     // Link symbol as requested
                     self.gen.do_link(name.clone(), vis);
 
@@ -1563,7 +1520,7 @@ impl<'a> Parser<'a> {
                 },
                 Token::Fn => {
                     let vis = self.maybe_want_vis();
-                    let name = self.ts.next_ident();
+                    let name = self.next_ident();
                     // Link symbol as requested
                     self.gen.do_link(name.clone(), vis);
 
@@ -1582,7 +1539,7 @@ impl<'a> Parser<'a> {
                             break;
                         }
                         // Otherwise try reading a normal parameter
-                        let name = self.ts.next_ident();
+                        let name = self.next_ident();
                         want!(self.ts, Token::Colon);
                         let ty = self.want_type();
                         params.push(ty.clone());
@@ -1653,7 +1610,6 @@ impl<'a> Parser<'a> {
 }
 
 pub fn parse_file(data: &str, gen: &mut Gen) {
-    let mut lexer = Lexer::new(data);
-    let mut parser = Parser::new(&mut lexer, gen);
+    let mut parser = Parser::new(Lexer::new(data), gen);
     parser.process();
 }

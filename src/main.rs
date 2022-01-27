@@ -3,6 +3,7 @@
 mod ast;
 mod gen;
 mod lex;
+mod util;
 
 use clap::{Arg,App};
 use std::process::Command;
