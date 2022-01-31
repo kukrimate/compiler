@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-mod ast;
 mod gen;
 mod lex;
+mod syntax;
 mod util;
 
 use clap::{Arg,App};
@@ -64,7 +64,7 @@ fn main() {
     let output_path = args.value_of("output").unwrap();
 
     let mut gen = gen::Gen::new();
-    ast::parse_file(&data, &mut gen);
+    syntax::parse_file(&data, &mut gen);
 
     if args.occurrences_of("assembly") > 0 {
         // Just write assembly to output

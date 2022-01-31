@@ -4,9 +4,11 @@
 // Recursive descent parser for the grammer described in "grammar.txt"
 //
 
+use super::ast::{Ty,ExprKind,Expr,Stmt};
+use super::symtab::{Vis,SymTab};
+
 use crate::lex::{Lexer,Token};
-use crate::gen::Gen;
-use crate::gen::Local;
+use crate::gen::{Gen,Local};
 use crate::util::PeekIter;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,255 +35,10 @@ macro_rules! maybe_want {
 }
 
 //
-// Type expressions
-//
-
-#[derive(Clone,Debug)]
-pub enum Ty {
-    Var(usize),
-
-    U8,
-    I8,
-    U16,
-    I16,
-    U32,
-    I32,
-    U64,
-    I64,
-    USize,
-
-    Bool,
-
-    Ptr {
-        // What type does this point to?
-        base_type: Box<Ty>,
-    },
-
-    Array {
-        // Ty of array elements
-        elem_type: Box<Ty>,
-        // Number of array elements
-        elem_count: Option<usize>,
-    },
-
-    // Product type
-    Record {
-        // Name of the record (this must match during type checking)
-        name: Rc<str>,
-        // Name lookup table
-        lookup: HashMap<Rc<str>, usize>,
-        // Field types and offsets (in declaration order)
-        fields: Box<[(Ty, usize)]>,
-        // Pre-calculated alingment and size
-        align: usize,
-        size: usize,
-    },
-
-    // Return type from a procedure
-    Void,
-
-    // Function
-    Func {
-        params: Box<[Ty]>,
-        varargs: bool,
-        rettype: Box<Ty>,
-    },
-}
-
-impl Ty {
-    pub fn is_signed(&self) -> bool {
-        match self {
-            Ty::I8|Ty::I16|Ty::I32|Ty::I64 => true,
-            _ => false
-        }
-    }
-
-    pub fn get_align(&self) -> usize {
-        match self {
-            Ty::U8 | Ty::I8 | Ty::Bool => 1,
-            Ty::U16 => 2,
-            Ty::I16 => 2,
-            Ty::U32 => 4,
-            Ty::I32 => 4,
-            Ty::U64 => 8,
-            Ty::I64 => 8,
-            Ty::USize => 8,
-            Ty::Ptr {..} => 8,
-            Ty::Array { elem_type, .. } => elem_type.get_align(),
-            Ty::Record { align, .. } => *align,
-            Ty::Var(_) | Ty::Void | Ty::Func {..}
-                => unreachable!(),
-        }
-    }
-
-    pub fn get_size(&self) -> usize {
-        match self {
-            Ty::Bool | Ty::U8 | Ty::I8 => 1,
-            Ty::U16 => 2,
-            Ty::I16 => 2,
-            Ty::U32 => 4,
-            Ty::I32 => 4,
-            Ty::U64 => 8,
-            Ty::I64 => 8,
-            Ty::USize => 8,
-            Ty::Ptr {..} => 8,
-            Ty::Array { elem_type, elem_count }
-                => elem_type.get_size() * elem_count
-                        .expect("Array without element count allocated"),
-            Ty::Record { size, .. } => *size,
-            Ty::Var(_) | Ty::Void | Ty::Func {..}
-                => unreachable!(),
-        }
-    }
-}
-
-//
-// Abstract syntax tree elements
-//
-
-#[derive(Clone,Debug)]
-pub enum ExprKind {
-    // Constant value
-    Const(usize),
-    // Array/Record literal
-    Compound(Vec<Expr>),
-    // Reference to symbol
-    Global(Rc<str>),
-    Local(Rc<Local>),
-    // Postfix expressions
-    Field(Box<Expr>, usize),
-    Call(Box<Expr>, Vec<Expr>, bool),
-    Elem(Box<Expr>, Box<Expr>),
-    // Prefix expressions
-    Ref(Box<Expr>),
-    Deref(Box<Expr>),
-    Not(Box<Expr>),
-    LNot(Box<Expr>),
-    Neg(Box<Expr>),
-    // Cast expression
-    Cast(Box<Expr>),
-    // Binary expressions
-    Mul(Box<Expr>, Box<Expr>),
-    Div(Box<Expr>, Box<Expr>),
-    Rem(Box<Expr>, Box<Expr>),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    Lsh(Box<Expr>, Box<Expr>),
-    Rsh(Box<Expr>, Box<Expr>),
-    And(Box<Expr>, Box<Expr>),
-    Xor(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
-    Lt(Box<Expr>, Box<Expr>),
-    Le(Box<Expr>, Box<Expr>),
-    Gt(Box<Expr>, Box<Expr>),
-    Ge(Box<Expr>, Box<Expr>),
-    Eq(Box<Expr>, Box<Expr>),
-    Ne(Box<Expr>, Box<Expr>),
-    LAnd(Box<Expr>, Box<Expr>),
-    LOr(Box<Expr>, Box<Expr>),
-}
-
-#[derive(Clone,Debug)]
-pub struct Expr {
-    pub ty: Ty,
-    pub kind: ExprKind,
-}
-
-impl Expr {
-    fn make_const(ty: Ty, val: usize) -> Expr {
-        Expr {
-            ty: ty,
-            kind: ExprKind::Const(val)
-        }
-    }
-
-    fn make_global(ty: Ty, name: Rc<str>) -> Expr {
-        Expr {
-            ty: ty,
-            kind: ExprKind::Global(name),
-        }
-    }
-
-    fn make_local(ty: Ty, local: Rc<Local>) -> Expr {
-        Expr {
-            ty: ty,
-            kind: ExprKind::Local(local),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Stmt {
-    Block(Vec<Stmt>),
-    Eval(Expr),
-    Ret(Option<Expr>),
-    Auto(Ty, Rc<Local>, Option<Expr>),
-    Label(Rc<str>),
-    Set(Expr, Expr),
-    Jmp(Rc<str>),
-    If(Expr, Box<Stmt>, Option<Box<Stmt>>),
-    While(Expr, Box<Stmt>),
-}
-
-#[derive(Debug,PartialEq)]
-pub enum Vis {
-    Private,    // Internal definition
-    Export,     // Exported definition
-    Extern,     // External definition reference
-}
-
-//
-// Chained hash tables used for a symbol table
-//
-
-struct SymTab {
-    list: Vec<HashMap<Rc<str>, Expr>>,
-}
-
-impl SymTab {
-    fn new() -> SymTab {
-        let mut symtab = SymTab {
-            list: Vec::new(),
-        };
-        symtab.list.push(HashMap::new());
-        symtab
-    }
-
-    fn insert(&mut self, name: Rc<str>, expr: Expr) {
-        let scope = self.list.last_mut().unwrap();
-        if let None = scope.get(&name) {
-            scope.insert(name, expr);
-        } else {
-            panic!("Re-declaration of {}", name)
-        }
-    }
-
-    fn lookup(&mut self, name: &Rc<str>) -> &Expr {
-        for scope in self.list.iter().rev() {
-            if let Some(ty) = scope.get(name) {
-                return ty;
-            }
-        }
-        panic!("Unknown identifier {}", name)
-    }
-
-    fn push_scope(&mut self) {
-        self.list.push(HashMap::new());
-    }
-
-    fn pop_scope(&mut self) {
-        if self.list.len() < 2 {
-            unreachable!();
-        }
-        self.list.pop();
-    }
-}
-
-//
 // Parser context
 //
 
-struct Parser<'a> {
+pub struct Parser<'a> {
     ts: PeekIter<Lexer<'a>, 2>,
     // Code generation backend
     gen: &'a mut Gen,
@@ -296,7 +53,7 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(lexer: Lexer<'a>, gen: &'a mut Gen) -> Self {
+    pub fn new(lexer: Lexer<'a>, gen: &'a mut Gen) -> Self {
         Parser {
             ts: PeekIter::new(lexer),
             gen: gen,
@@ -1476,7 +1233,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn process(&mut self) {
+    pub fn process(&mut self) {
         while let Some(token) = self.ts.next() {
             //
             // Process file element
@@ -1607,9 +1364,4 @@ impl<'a> Parser<'a> {
             self.tvarmap.clear();
         }
     }
-}
-
-pub fn parse_file(data: &str, gen: &mut Gen) {
-    let mut parser = Parser::new(Lexer::new(data), gen);
-    parser.process();
 }

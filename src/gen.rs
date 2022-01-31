@@ -4,7 +4,7 @@
 // Code generation
 //
 
-use crate::ast::{Expr,ExprKind,Ty,Stmt,Vis};
+use crate::syntax::{Expr,ExprKind,Ty,Stmt,Vis};
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
