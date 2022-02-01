@@ -5,7 +5,7 @@ mod symtab;
 use crate::lex::Lexer;
 use crate::gen::Gen;
 
-pub use ast::{Ty,ExprKind,Expr,Stmt};
+pub use ast::{UOp,BOp,Cond,Ty,ExprKind,Expr,Stmt};
 pub use symtab::{Vis,SymTab};
 
 

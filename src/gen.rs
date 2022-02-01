@@ -4,40 +4,10 @@
 // Code generation
 //
 
-use crate::syntax::{Expr,ExprKind,Ty,Stmt,Vis};
+use crate::syntax::{UOp,BOp,Cond,Expr,ExprKind,Ty,Stmt,Vis};
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
-
-#[derive(Clone,Copy,PartialEq)]
-pub enum UOp {
-    Not,
-    Neg,
-}
-
-#[derive(Clone,Copy,PartialEq)]
-pub enum BOp {
-    Mul,
-    Div,
-    Rem,
-    Add,
-    Sub,
-    Lsh,
-    Rsh,
-    And,
-    Xor,
-    Or,
-}
-
-#[derive(Clone,Copy)]
-pub enum Cond {
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    Eq,
-    Ne,
-}
 
 //
 // Local variables
@@ -489,41 +459,18 @@ impl FuncGen {
             },
             ExprKind::Deref(inner) =>
                 Val::Deref(Box::new(self.gen_expr(&*inner)), 0),
-            ExprKind::Not(inner)
-                => self.gen_unary(UOp::Not, &expr.ty, &*inner),
-            ExprKind::Neg(inner)
-                => self.gen_unary(UOp::Neg, &expr.ty, &*inner),
+
+            // Unary operations
+            ExprKind::Unary(op, inner)
+                => self.gen_unary(*op, &expr.ty, &*inner),
 
             // Binary operations
-            ExprKind::Mul(lhs, rhs)
-                => self.gen_binary(BOp::Mul, &expr.ty, &*lhs, &*rhs),
-            ExprKind::Div(lhs, rhs)
-                => self.gen_binary(BOp::Div, &expr.ty, &*lhs, &*rhs),
-            ExprKind::Rem(lhs, rhs)
-                => self.gen_binary(BOp::Rem, &expr.ty, &*lhs, &*rhs),
-            ExprKind::Add(lhs, rhs)
-                => self.gen_binary(BOp::Add, &expr.ty, &*lhs, &*rhs),
-            ExprKind::Sub(lhs, rhs)
-                => self.gen_binary(BOp::Sub, &expr.ty, &*lhs, &*rhs),
-            ExprKind::Lsh(lhs, rhs)
-                => self.gen_binary(BOp::Lsh, &expr.ty, &*lhs, &*rhs),
-            ExprKind::Rsh(lhs, rhs)
-                => self.gen_binary(BOp::Rsh, &expr.ty, &*lhs, &*rhs),
-            ExprKind::And(lhs, rhs)
-                => self.gen_binary(BOp::And, &expr.ty, &*lhs, &*rhs),
-            ExprKind::Xor(lhs, rhs)
-                => self.gen_binary(BOp::Xor, &expr.ty, &*lhs, &*rhs),
-            ExprKind::Or(lhs, rhs)
-                => self.gen_binary(BOp::Or, &expr.ty, &*lhs, &*rhs),
+            ExprKind::Binary(op, lhs, rhs)
+                => self.gen_binary(*op, &expr.ty, &*lhs, &*rhs),
 
             // Boolean expressions
+            ExprKind::Cond(_, _, _) |
             ExprKind::LNot(_) |
-            ExprKind::Lt(_, _) |
-            ExprKind::Le(_, _) |
-            ExprKind::Gt(_, _) |
-            ExprKind::Ge(_, _) |
-            ExprKind::Eq(_, _) |
-            ExprKind::Ne(_, _) |
             ExprKind::LAnd(_, _) |
             ExprKind::LOr(_, _) => {
                 let ltrue = self.next_label();
@@ -594,21 +541,11 @@ impl FuncGen {
 
     fn gen_bool_expr(&mut self, expr: &Expr, ltrue: usize, lfalse: usize) {
         match &expr.kind {
+            ExprKind::Cond(cond, lhs, rhs) =>
+                self.gen_jcc(*cond, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
+
             ExprKind::LNot(inner)
                 => self.gen_bool_expr(&*inner, lfalse, ltrue),
-
-            ExprKind::Lt(lhs, rhs) =>
-                self.gen_jcc(Cond::Lt, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
-            ExprKind::Le(lhs, rhs) =>
-                self.gen_jcc(Cond::Le, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
-            ExprKind::Gt(lhs, rhs) =>
-                self.gen_jcc(Cond::Gt, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
-            ExprKind::Ge(lhs, rhs) =>
-                self.gen_jcc(Cond::Ge, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
-            ExprKind::Eq(lhs, rhs) =>
-                self.gen_jcc(Cond::Eq, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
-            ExprKind::Ne(lhs, rhs) =>
-                self.gen_jcc(Cond::Ne, ltrue, lfalse, &lhs.ty, &*lhs, &*rhs),
             ExprKind::LAnd(lhs, rhs) => {
                 let lmid = self.next_label();
                 self.gen_bool_expr(&*lhs, lmid, lfalse);
@@ -635,14 +572,16 @@ impl FuncGen {
     // Generate an expression for side effects
     fn gen_eval_expr(&mut self, expr: &Expr) {
         match &expr.kind {
-            // Constant value
+            // Constant
             ExprKind::Const(_) => (),
-            // Compound literals
+
+            // Compound literal
             ExprKind::Compound(exprs) => {
                 for expr in exprs.iter() {
                     self.gen_eval_expr(expr);
                 }
             },
+
             // Reference to symbol
             ExprKind::Global(_) => (),
             ExprKind::Local(_) => (),
@@ -658,46 +597,26 @@ impl FuncGen {
             ExprKind::Call(func, args, varargs)
                 => self.gen_call(&*func, args, *varargs),
 
-            // Prefix expressions
             ExprKind::Ref(inner) |
             ExprKind::Deref(inner) |
-            ExprKind::Not(inner) |
-            ExprKind::Neg(inner)
-                => self.gen_eval_expr(&*inner),
+            ExprKind::Unary(_, inner) |
+            ExprKind::Cast(inner) => {
+                self.gen_eval_expr(&*inner)
+            },
 
-            // Binary operations
-            ExprKind::Mul(lhs, rhs) |
-            ExprKind::Div(lhs, rhs) |
-            ExprKind::Rem(lhs, rhs) |
-            ExprKind::Add(lhs, rhs) |
-            ExprKind::Sub(lhs, rhs) |
-            ExprKind::Lsh(lhs, rhs) |
-            ExprKind::Rsh(lhs, rhs) |
-            ExprKind::And(lhs, rhs) |
-            ExprKind::Xor(lhs, rhs) |
-            ExprKind::Or(lhs, rhs)
-                => {
-                    self.gen_eval_expr(&*lhs);
-                    self.gen_eval_expr(&*rhs);
-                }
+            ExprKind::Binary(_, lhs, rhs) => {
+                self.gen_eval_expr(&*lhs);
+                self.gen_eval_expr(&*rhs);
+            },
 
-            // Boolean expressions
+            ExprKind::Cond(_, _, _) |
             ExprKind::LNot(_) |
-            ExprKind::Lt(_, _) |
-            ExprKind::Le(_, _) |
-            ExprKind::Gt(_, _) |
-            ExprKind::Ge(_, _) |
-            ExprKind::Eq(_, _) |
-            ExprKind::Ne(_, _) |
             ExprKind::LAnd(_, _) |
             ExprKind::LOr(_, _) => {
                 let lend = self.next_label();
                 self.gen_bool_expr(expr, lend, lend);
                 writeln!(self.code, ".{}:", lend).unwrap();
             },
-
-            // Cast
-            ExprKind::Cast(inner) => self.gen_eval_expr(&*inner),
         }
     }
 

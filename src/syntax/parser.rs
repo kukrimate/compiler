@@ -4,7 +4,7 @@
 // Recursive descent parser for the grammer described in "grammar.txt"
 //
 
-use super::ast::{Ty,ExprKind,Expr,Stmt};
+use super::ast::{UOp,BOp,Cond,Ty,ExprKind,Expr,Stmt};
 use super::symtab::{Vis,SymTab};
 
 use crate::lex::{Lexer,Token};
@@ -291,24 +291,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn make_not(&mut self, expr: Expr) -> Expr {
+    fn make_unary(&mut self, op: UOp, expr: Expr) -> Expr {
         Expr {
             ty: expr.ty.clone(),
-            kind: ExprKind::Not(Box::new(expr))
-        }
-    }
-
-    fn make_lnot(&mut self, expr: Expr) -> Expr {
-        Expr {
-            ty: expr.ty.clone(),
-            kind: ExprKind::LNot(Box::new(expr))
-        }
-    }
-
-    fn make_neg(&mut self, expr: Expr) -> Expr {
-        Expr {
-            ty: expr.ty.clone(),
-            kind: ExprKind::Neg(Box::new(expr))
+            kind: ExprKind::Unary(op, Box::new(expr))
         }
     }
 
@@ -319,129 +305,37 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn make_mul(&mut self, expr: Expr, expr2: Expr) -> Expr {
+    fn make_binary(&mut self, op: BOp, expr: Expr, expr2: Expr) -> Expr {
         Expr {
             ty: self.unify(&expr.ty, &expr2.ty),
-            kind: ExprKind::Mul(Box::new(expr), Box::new(expr2))
+            kind: ExprKind::Binary(op, Box::new(expr), Box::new(expr2))
         }
     }
 
-    fn make_div(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        Expr {
-            ty: self.unify(&expr.ty, &expr2.ty),
-            kind: ExprKind::Div(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_rem(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        Expr {
-            ty: self.unify(&expr.ty, &expr2.ty),
-            kind: ExprKind::Rem(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_add(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        Expr {
-            ty: self.unify(&expr.ty, &expr2.ty),
-            kind: ExprKind::Add(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_sub(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        Expr {
-            ty: self.unify(&expr.ty, &expr2.ty),
-            kind: ExprKind::Sub(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_lsh(&mut self, expr: Expr, expr2: Expr) -> Expr {
+    fn make_shift(&mut self, op: BOp, expr: Expr, expr2: Expr) -> Expr {
         Expr {
             ty: expr.ty.clone(),
-            kind: ExprKind::Lsh(Box::new(expr), Box::new(expr2))
+            kind: ExprKind::Binary(op, Box::new(expr), Box::new(expr2))
         }
     }
 
-    fn make_rsh(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        Expr {
-            ty: expr.ty.clone(),
-            kind: ExprKind::Rsh(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_lt(&mut self, expr: Expr, expr2: Expr) -> Expr {
+    fn make_cond(&mut self, cond: Cond, expr: Expr, expr2: Expr) -> Expr {
         self.unify(&expr.ty, &expr2.ty);
         Expr {
             ty: Ty::Bool,
-            kind: ExprKind::Lt(Box::new(expr), Box::new(expr2))
+            kind: ExprKind::Cond(cond, Box::new(expr), Box::new(expr2))
         }
     }
 
-    fn make_le(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(&expr.ty, &expr2.ty);
+    fn make_lnot(&mut self, expr: Expr) -> Expr {
+        self.unify(&expr.ty, &Ty::Bool);
         Expr {
             ty: Ty::Bool,
-            kind: ExprKind::Le(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_gt(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(&expr.ty, &expr2.ty);
-        Expr {
-            ty: Ty::Bool,
-            kind: ExprKind::Gt(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_ge(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(&expr.ty, &expr2.ty);
-        Expr {
-            ty: Ty::Bool,
-            kind: ExprKind::Ge(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_eq(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(&expr.ty, &expr2.ty);
-        Expr {
-            ty: Ty::Bool,
-            kind: ExprKind::Eq(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_ne(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        self.unify(&expr.ty, &expr2.ty);
-        Expr {
-            ty: Ty::Bool,
-            kind: ExprKind::Ne(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_and(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        Expr {
-            ty: self.unify(&expr.ty, &expr2.ty),
-            kind: ExprKind::And(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_xor(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        Expr {
-            ty: self.unify(&expr.ty, &expr2.ty),
-            kind: ExprKind::Xor(Box::new(expr), Box::new(expr2))
-        }
-    }
-
-    fn make_or(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        Expr {
-            ty: self.unify(&expr.ty, &expr2.ty),
-            kind: ExprKind::Or(Box::new(expr), Box::new(expr2))
+            kind: ExprKind::LNot(Box::new(expr))
         }
     }
 
     fn make_land(&mut self, expr: Expr, expr2: Expr) -> Expr {
-        // Mostly pointless, but we can add a constraint on these being bool
-        // to the deducer. This should not matter for valid code, but for example
-        // this will force un-initialized lets used in this context to be deduced
-        // to be bool.
         self.unify(&expr.ty, &Ty::Bool);
         self.unify(&expr2.ty, &Ty::Bool);
         Expr {
@@ -494,63 +388,25 @@ impl<'a> Parser<'a> {
                 => ExprKind::Ref(Box::new(self.finalize_expr(*inner))),
             ExprKind::Deref(inner)
                 => ExprKind::Deref(Box::new(self.finalize_expr(*inner))),
-            ExprKind::Not(inner)
-                => ExprKind::Not(Box::new(self.finalize_expr(*inner))),
-            ExprKind::LNot(inner)
-                => ExprKind::LNot(Box::new(self.finalize_expr(*inner))),
-            ExprKind::Neg(inner)
-                => ExprKind::Neg(Box::new(self.finalize_expr(*inner))),
+
+            ExprKind::Unary(op, inner)
+                => ExprKind::Unary(op, Box::new(self.finalize_expr(*inner))),
+
             ExprKind::Cast(inner)
                 => ExprKind::Cast(Box::new(self.finalize_expr(*inner))),
 
-            ExprKind::Mul(lhs, rhs)
-                => ExprKind::Mul(Box::new(self.finalize_expr(*lhs)),
+            ExprKind::Binary(op, lhs, rhs)
+                => ExprKind::Binary(op,
+                    Box::new(self.finalize_expr(*lhs)),
                     Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Div(lhs, rhs)
-                => ExprKind::Div(Box::new(self.finalize_expr(*lhs)),
+
+            ExprKind::Cond(cond, lhs, rhs)
+                => ExprKind::Cond(cond,
+                    Box::new(self.finalize_expr(*lhs)),
                     Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Rem(lhs, rhs)
-                => ExprKind::Rem(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Add(lhs, rhs)
-                => ExprKind::Add(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Sub(lhs, rhs)
-                => ExprKind::Sub(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Lsh(lhs, rhs)
-                => ExprKind::Lsh(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Rsh(lhs, rhs)
-                => ExprKind::Rsh(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::And(lhs, rhs)
-                => ExprKind::And(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Xor(lhs, rhs)
-                => ExprKind::Xor(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Or(lhs, rhs)
-                => ExprKind::Or(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Lt(lhs, rhs)
-                => ExprKind::Lt(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Le(lhs, rhs)
-                => ExprKind::Le(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Gt(lhs, rhs)
-                => ExprKind::Gt(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Ge(lhs, rhs)
-                => ExprKind::Ge(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Eq(lhs, rhs)
-                => ExprKind::Eq(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
-            ExprKind::Ne(lhs, rhs)
-                => ExprKind::Ne(Box::new(self.finalize_expr(*lhs)),
-                    Box::new(self.finalize_expr(*rhs))),
+
+            ExprKind::LNot(inner)
+                => ExprKind::LNot(Box::new(self.finalize_expr(*inner))),
             ExprKind::LAnd(lhs, rhs)
                 => ExprKind::LAnd(Box::new(self.finalize_expr(*lhs)),
                     Box::new(self.finalize_expr(*rhs))),
@@ -789,10 +645,10 @@ impl<'a> Parser<'a> {
     fn want_unary(&mut self) -> Expr {
         if maybe_want!(self.ts, Token::Sub) {
             let expr = self.want_unary();
-            self.make_neg(expr)
+            self.make_unary(UOp::Neg, expr)
         } else if maybe_want!(self.ts, Token::Tilde) {
             let expr = self.want_unary();
-            self.make_not(expr)
+            self.make_unary(UOp::Not, expr)
         } else if maybe_want!(self.ts, Token::Excl) {
             let expr = self.want_unary();
             self.make_lnot(expr)
@@ -823,13 +679,13 @@ impl<'a> Parser<'a> {
         loop {
             if maybe_want!(self.ts, Token::Mul) {
                 let expr2 = self.want_cast();
-                expr = self.make_mul(expr, expr2);
+                expr = self.make_binary(BOp::Mul, expr, expr2);
             } else if maybe_want!(self.ts, Token::Div) {
                 let expr2 = self.want_cast();
-                expr = self.make_div(expr, expr2);
+                expr = self.make_binary(BOp::Div, expr, expr2);
             } else if maybe_want!(self.ts, Token::Rem) {
                 let expr2 = self.want_cast();
-                expr = self.make_rem(expr, expr2);
+                expr = self.make_binary(BOp::Rem, expr, expr2);
             } else {
                 return expr;
             }
@@ -841,10 +697,10 @@ impl<'a> Parser<'a> {
         loop {
             if maybe_want!(self.ts, Token::Add) {
                 let expr2 = self.want_mul();
-                expr = self.make_add(expr, expr2);
+                expr = self.make_binary(BOp::Add, expr, expr2);
             } else if maybe_want!(self.ts, Token::Sub) {
                 let expr2 = self.want_mul();
-                expr = self.make_sub(expr, expr2);
+                expr = self.make_binary(BOp::Sub, expr, expr2);
             } else {
                 return expr;
             }
@@ -856,10 +712,10 @@ impl<'a> Parser<'a> {
         loop {
             if maybe_want!(self.ts, Token::Lsh) {
                 let expr2 = self.want_add();
-                expr = self.make_lsh(expr, expr2);
+                expr = self.make_shift(BOp::Lsh, expr, expr2);
             } else if maybe_want!(self.ts, Token::Rsh) {
                 let expr2 = self.want_add();
-                expr = self.make_rsh(expr, expr2);
+                expr = self.make_shift(BOp::Rsh, expr, expr2);
             } else {
                 return expr;
             }
@@ -871,7 +727,7 @@ impl<'a> Parser<'a> {
         loop {
             if maybe_want!(self.ts, Token::And) {
                 let expr2 = self.want_shift();
-                expr = self.make_and(expr, expr2);
+                expr = self.make_binary(BOp::And, expr, expr2);
             } else {
                 return expr;
             }
@@ -883,7 +739,7 @@ impl<'a> Parser<'a> {
         loop {
             if maybe_want!(self.ts, Token::Xor) {
                 let expr2 = self.want_and();
-                expr = self.make_xor(expr, expr2);
+                expr = self.make_binary(BOp::Xor, expr, expr2);
             } else {
                 return expr;
             }
@@ -895,7 +751,7 @@ impl<'a> Parser<'a> {
         loop {
             if maybe_want!(self.ts, Token::Or) {
                 let expr2 = self.want_xor();
-                expr = self.make_or(expr, expr2);
+                expr = self.make_binary(BOp::Or, expr, expr2);
             } else {
                 return expr;
             }
@@ -906,22 +762,22 @@ impl<'a> Parser<'a> {
         let expr = self.want_or();
         if maybe_want!(self.ts, Token::Lt) {
             let expr2 = self.want_or();
-            self.make_lt(expr, expr2)
+            self.make_cond(Cond::Lt, expr, expr2)
         } else if maybe_want!(self.ts, Token::Le) {
             let expr2 = self.want_or();
-            self.make_le(expr, expr2)
+            self.make_cond(Cond::Le, expr, expr2)
         } else if maybe_want!(self.ts, Token::Gt) {
             let expr2 = self.want_or();
-            self.make_gt(expr, expr2)
+            self.make_cond(Cond::Gt, expr, expr2)
         } else if maybe_want!(self.ts, Token::Ge) {
             let expr2 = self.want_or();
-            self.make_ge(expr, expr2)
+            self.make_cond(Cond::Ge, expr, expr2)
         } else if maybe_want!(self.ts, Token::Eq) {
             let expr2 = self.want_or();
-            self.make_eq(expr, expr2)
+            self.make_cond(Cond::Eq, expr, expr2)
         } else if maybe_want!(self.ts, Token::Ne) {
             let expr2 = self.want_or();
-            self.make_ne(expr, expr2)
+            self.make_cond(Cond::Ne, expr, expr2)
         } else {
             expr
         }

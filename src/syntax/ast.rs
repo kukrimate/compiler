@@ -98,6 +98,36 @@ impl Ty {
 // Expressions
 //
 
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub enum UOp {
+    Not,
+    Neg,
+}
+
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub enum BOp {
+    Mul,
+    Div,
+    Rem,
+    Add,
+    Sub,
+    Lsh,
+    Rsh,
+    And,
+    Xor,
+    Or,
+}
+
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub enum Cond {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
 #[derive(Clone,Debug)]
 pub enum ExprKind {
     // Constant value
@@ -111,31 +141,25 @@ pub enum ExprKind {
     Field(Box<Expr>, usize),
     Call(Box<Expr>, Vec<Expr>, bool),
     Elem(Box<Expr>, Box<Expr>),
-    // Prefix expressions
+
+    // Indirection
     Ref(Box<Expr>),
     Deref(Box<Expr>),
-    Not(Box<Expr>),
-    LNot(Box<Expr>),
-    Neg(Box<Expr>),
-    // Cast expression
+
+    // Unary arithmetic
+    Unary(UOp, Box<Expr>),
+
+    // Cast
     Cast(Box<Expr>),
-    // Binary expressions
-    Mul(Box<Expr>, Box<Expr>),
-    Div(Box<Expr>, Box<Expr>),
-    Rem(Box<Expr>, Box<Expr>),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    Lsh(Box<Expr>, Box<Expr>),
-    Rsh(Box<Expr>, Box<Expr>),
-    And(Box<Expr>, Box<Expr>),
-    Xor(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
-    Lt(Box<Expr>, Box<Expr>),
-    Le(Box<Expr>, Box<Expr>),
-    Gt(Box<Expr>, Box<Expr>),
-    Ge(Box<Expr>, Box<Expr>),
-    Eq(Box<Expr>, Box<Expr>),
-    Ne(Box<Expr>, Box<Expr>),
+
+    // Binary arithmetic
+    Binary(BOp, Box<Expr>, Box<Expr>),
+
+    // Conditional expressions
+    Cond(Cond, Box<Expr>, Box<Expr>),
+
+    // Boolean expressions
+    LNot(Box<Expr>),
     LAnd(Box<Expr>, Box<Expr>),
     LOr(Box<Expr>, Box<Expr>),
 }
